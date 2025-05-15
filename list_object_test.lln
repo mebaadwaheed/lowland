@@ -1,0 +1,135 @@
+// Lowland script to test list methods and basic object declaration
+
+println("=== List Method Tests ===");
+
+// --- List Literals and Basic Info ---
+println("--- Literals, len(), get() ---");
+let& my_empty_list: list = [];
+println("Empty list:", my_empty_list, "Length:", my_empty_list.len());
+
+let& my_int_list: list<int> = [10, 20, 30];
+println("Int list:", my_int_list, "Length:", my_int_list.len());
+println("Element at 0:", my_int_list.get(0));
+println("Element at 2:", my_int_list.get(2));
+
+let& my_string_list: list<string> = ["hello", "world"];
+println("String list:", my_string_list, "Length:", my_string_list.len());
+println("Element at 1:", my_string_list.get(1));
+
+// Should be caught by parser or interpreter based on first element rule
+
+
+println();
+println("--- push() ---");
+// Pushing to an empty list (type should be inferred)
+let& list1: list = [];
+println("List1 (before push):", list1, list1.len());
+list1.push(100);
+println("List1 (after push 100):", list1, list1.len());
+list1.push(200);
+println("List1 (after push 200):", list1, list1.len());
+// list1.push("should_error"); // Test pushing wrong type (uncomment to test error)
+
+// Pushing to a typed list
+let& list2: list<string> = ["a"];
+println("List2 (before push):", list2, list2.len());
+list2.push("b");
+println("List2 (after push 'b'):", list2, list2.len());
+list2.push("c");
+println("List2 (after push 'c'):", list2, list2.len());
+// list2.push(123); // Test pushing wrong type (uncomment to test error)
+
+// Pushing null
+let& list_with_null: list<int> = [1, 2];
+list_with_null.push(null);
+println("List with null pushed:", list_with_null, list_with_null.len());
+println("Element at 2 (should be null):", list_with_null.get(2));
+
+
+println();
+println("--- pop() ---");
+let& list3: list<int> = [1, 2, 3, 4];
+println("List3 (before pop):", list3, list3.len());
+let& popped1: int = list3.pop();
+println("Popped1:", popped1);
+println("List3 (after 1st pop):", list3);
+println("List3 new len:", list3.len());
+let& popped2: int = list3.pop();
+println("Popped2:", popped2, "List3 (after 2nd pop):", list3, list3.len());
+list3.pop();
+list3.pop();
+println("List3 (after popping all):", list3, list3.len());
+// list3.pop(); // Test popping from empty list (uncomment to test error)
+
+
+println();
+println("--- set() ---");
+let& list4: list<string> = ["x", "y", "z"];
+println("List4 (before set):", list4);
+list4.set(1, "UPDATED");
+println("List4 (after set(1, UPDATED)):", list4);
+list4.set(0, "FIRST");
+println("List4 (after set(0, FIRST)):", list4);
+// list4.set(3, "outofbounds"); // Test set out of bounds (uncomment to test error)
+// list4.set(0, 123); // Test set with wrong type (uncomment to test error)
+
+let& list_unknown_type_set: list = [];
+// list_unknown_type_set.set(0, "test"); // This should error as type is unknown and list is empty.
+// println("This line should not be reached if above errors.");
+
+
+println();
+println("--- Out of Bounds and Error Tests (manual check or uncomment) ---");
+let& list_bounds: list<int> = [0, 1];
+// println(list_bounds.get(2)); // Out of bounds
+// println(list_bounds.get(-1)); // Out of bounds (if we don't explicitly handle negative)
+// list_bounds.set(2, 100); // Out of bounds
+
+println();
+println("=== Basic Object Declaration Test ===");
+let& my_obj: obj = {};
+// Currently, objects are very basic. We can declare them.
+println("My object:", my_obj);
+// my_obj.some_method(); // This would error as object methods are not implemented.
+
+println();
+println("=== End of List/Object Tests ===");
+
+println();
+println("=== Object Property Tests ===");
+
+// Object literal
+let& obj1: obj = { name: "Lowland", version: 1, active: true, data: [10, 20] };
+println("Obj1:", obj1);
+
+// Property access
+println("Obj1.name:", obj1.name);
+println("Obj1.version:", obj1.version);
+println("Obj1.active:", obj1.active);
+println("Obj1.data:", obj1.data);
+println("Obj1.data.len():", obj1.data.len());
+println("Obj1.data.get(0):", obj1.data.get(0));
+println("Obj1.non_existent_prop:", obj1.non_existent_prop); // Should be null
+
+// Property assignment
+let& obj2: obj = { count: 0 };
+println("Obj2 (before):", obj2, "Count:", obj2.count);
+obj2.count = 100;
+println("Obj2 (after count=100):", obj2, "Count:", obj2.count);
+obj2.new_prop = "hello"; // Adding a new property
+println("Obj2 (after new_prop):", obj2, "NewProp:", obj2.new_prop);
+obj2.name = "Test Object";
+println("Obj2 (after name):", obj2, "Name:", obj2.name);
+
+// Chained access and assignment
+let& obj3: obj = { inner: { value: 10 } };
+println("Obj3:", obj3);
+println("Obj3.inner.value:", obj3.inner.value);
+obj3.inner.value = 20;
+println("Obj3 (after inner.value=20):", obj3, "Obj3.inner.value:", obj3.inner.value);
+
+println("Modifying list in obj1.data..."); 
+obj1.data.set(0, 1000);
+println("Obj1.data (after set):", obj1.data);
+println("Obj1 (full after data mod):", obj1);
+

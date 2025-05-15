@@ -1,0 +1,38 @@
+// Example Lowland program with the new operators
+
+// Testing exponentiation operator (**)
+let base: int = 2;
+let exponent: int = 3;
+println("2 ** 3 =", base ** exponent);  // Should be 8
+
+// Testing != operator (not equal)
+let a: int = 5;
+let b: int = 10;
+println("5 != 10 is", a != b);  // Should be true
+println("5 != 5 is", a != a);   // Should be false
+
+// Testing increment and decrement operators
+let& counter: int = 10;
+println("Initial counter:", counter);
+
+counter++;
+println("After increment:", counter);  // Should be 11
+
+counter--;
+println("After decrement:", counter);  // Should be 10 
+
+func Add(num1: int, num2: int) {
+    return num1 + num2;
+}
+
+func User() {
+    println("hello world user");
+}
+
+println(Add(1, 2));
+
+User();
+
+while (1 == 1) {
+    println("numm");
+}

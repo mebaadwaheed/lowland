@@ -1,0 +1,30 @@
+// Example Lowland program with variables
+
+// Immutable variable declarations
+let name: string = "Lowland";
+let version: int = 1;
+let is_cool: bool = true;
+
+// Print variables
+println("Language:", name);
+println("Version:", version);
+println("Is Cool:", is_cool);
+
+// Mutable variable declaration
+let& counter: int = 0;
+println("Counter initial value:", counter);
+
+// Reassigning mutable variable
+counter = counter + 1;
+println("Counter after increment:", counter);
+
+// Mutable variable declaration without initialization
+let& message: string;
+message = "Hello, " + name + "!";
+println(message);
+
+// Type checking
+let x: int = 42;
+let y: int = x * 2;
+println("x =", x, "y =", y); 
+println(name + version);

@@ -1,0 +1,29 @@
+// Test 1: Standard include (all exported from module.lln)
+including "module.lln";
+println(exported_greeting("Standard Include"));
+// println(local_greeting("Standard")); // Should fail (and does)
+
+println("---");
+
+// Test 2: Selective include from multi_export.lln
+including [ feature_a, common_util ] from "multi_export.lln";
+
+println(feature_a());
+println(common_util());
+// println(feature_b()); // This was tested and correctly failed.
+// println(helper_for_a()); // Should fail: not exported
+
+println("---");
+
+// Test 3: Attempt to import non-exported item selectively
+// including [ helper_for_a ] from "multi_export.lln"; // This was tested and correctly failed.
+// println("Test 3 (should not be reached if above uncommented)");
+
+println("---");
+
+// Test 4: Attempt to import non-existent item selectively
+including [ non_existent_feature ] from "multi_export.lln"; // Should fail: non_existent_feature not defined
+// println("Test 4 (should not be reached if above uncommented)");
+
+
+println("Selective include tests complete (check for errors above)."); 

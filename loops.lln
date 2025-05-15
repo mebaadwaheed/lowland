@@ -1,0 +1,50 @@
+// Example Lowland program demonstrating loops
+
+// While loop example
+println("=== While Loop Example ===");
+let& i: int = 1;
+while (i <= 5) {
+    println("While iteration:", i);
+    i = i + 1;
+}
+
+println();  // Empty line for spacing
+
+// For loop example
+println("=== For Loop Example ===");
+for (let& j: int = 1; j <= 5; j = j + 1) {
+    println("For iteration:", j);
+}
+
+println();  // Empty line for spacing
+
+// Nested loops example
+println("=== Nested Loops Example ===");
+for (let& x: int = 1; x <= 3; x = x + 1) {
+    println("Outer loop:", x);
+    
+    let& y: int = 1;
+    while (y <= x) {
+        println("  Inner loop:", y);
+        y = y + 1;
+    }
+}
+
+println();  // Empty line for spacing
+
+// Loop with conditional break example
+println("=== Early Exit Example ===");
+let& sum: int = 0;
+let& count: int = 1;
+
+while (count <= 10) {
+    sum = sum + count;
+    
+    if (sum > 20) {
+        println("Sum exceeded 20 at count:", count);
+        println("Final sum:", sum);
+        // We would break here if Lowland had break statements
+    }
+    
+    count = count + 1;
+} 

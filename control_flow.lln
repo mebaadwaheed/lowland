@@ -1,0 +1,53 @@
+// Example Lowland program with control flow
+
+// Variable for testing conditions
+let& num: int = 10;
+println("Initial value:", num);
+
+// Simple if statement
+if (num > 5) {
+    println("Number is greater than 5");
+}
+
+// If-else statement
+if (num > 20) {
+    println("Number is greater than 20");
+} else {
+    println("Number is NOT greater than 20");
+}
+
+// If-elif-else statement
+if (num > 20) {
+    println("Number is greater than 20");
+} elif (num > 15) {
+    println("Number is greater than 15");
+} elif (num > 5) {
+    println("Number is greater than 5");
+} else {
+    println("Number is 5 or less");
+}
+
+// Update the variable
+num = 18;
+println("Updated value:", num);
+
+// Test the updated condition
+if (num > 20) {
+    println("Number is greater than 20");
+} elif (num > 15) {
+    println("Number is greater than 15");
+} elif (num > 5) {
+    println("Number is greater than 5");
+} else {
+    println("Number is 5 or less");
+}
+
+// Nested if statements
+if (num > 5) {
+    println("Outer condition: num > 5");
+    if (num > 10) {
+        println("Inner condition: num > 10");
+    } else {
+        println("Inner condition: num <= 10");
+    }
+} 

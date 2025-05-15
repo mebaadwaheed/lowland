@@ -1,0 +1,28 @@
+// Example Lowland program
+// This demonstrates basic language features
+
+// Basic println with string
+println("Hello, Lowland!");
+
+// Integers and arithmetic
+println(42);
+println(2 + 3 * 4);
+println(10 - 5);
+println(20 / 4);
+
+// Booleans and logical operators
+println(true);
+println(false);
+println(!true);
+println(!false);
+
+// Comparison operators
+println(1 == 1);
+println(1 != 2);
+println(5 > 3);
+println(5 >= 5);
+println(3 < 5);
+println(3 <= 3);
+
+// Additional example
+println("hello", "lowland!");

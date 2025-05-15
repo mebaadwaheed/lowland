@@ -1,0 +1,75 @@
+// Example Lowland program demonstrating break and continue
+
+// Break example - print numbers from 1 to 10, but stop at 5
+println("=== Break Example ===");
+let& i: int = 1;
+while (i <= 10) {
+    println("Number:", i);
+    
+    // Increment before checking the condition
+    i = i + 1;
+    
+    if (i > 5) {
+        println("Breaking the loop after 5");
+        break;
+    }
+}
+
+println();  // Empty line for spacing
+
+// Continue example - print only odd numbers from 1 to 10
+println("=== Continue Example ===");
+for (let& j: int = 1; j <= 10; j = j + 1) {
+    if (j % 2 == 0) {
+        // Skip even numbers
+        continue;
+    }
+    
+    println("Odd number:", j);
+}
+
+println();  // Empty line for spacing
+
+// Nested loops with break and continue
+println("=== Nested Loops Example ===");
+for (let& x: int = 1; x <= 5; x = x + 1) {
+    println("Outer loop:", x);
+    
+    let& y: int = 1;
+    while (y <= 5) {
+        // Skip multiples of 3 in the inner loop
+        if (y % 3 == 0) {
+            y = y + 1;
+            continue;
+        }
+        
+        println("  Inner loop:", y);
+        
+        // Break inner loop when y is greater than x
+        if (y > x) {
+            println("  Breaking inner loop");
+            break;
+        }
+        
+        y = y + 1;
+    }
+}
+
+println();  // Empty line for spacing
+
+// Sum example with early exit
+println("=== Sum Example with Early Exit ===");
+let& sum: int = 0;
+let& count: int = 1;
+
+while (count <= 10) {
+    sum = sum + count;
+    println("Added", count, "- Sum is now:", sum);
+    
+    if (sum > 20) {
+        println("Sum exceeded 20! Stopping early.");
+        break;
+    }
+    
+    count = count + 1;
+} 

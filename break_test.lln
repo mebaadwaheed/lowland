@@ -1,0 +1,18 @@
+// Simple test for break functionality
+println("Starting break test");
+
+// Simple loop with break
+let& count: int = 1;
+while (count <= 10) {
+    println("Count =", count);
+    
+    // Break after count reaches 3
+    if (count == 3) {
+        println("Breaking at 3");
+        break;
+    }
+    
+    count = count + 1;
+}
+
+println("Loop finished"); 

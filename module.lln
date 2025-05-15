@@ -1,0 +1,7 @@
+export func exported_greeting(name: string): string {
+    return "Hello from module, " + name + "!";
+}
+
+func local_greeting(name: string): string {
+    return "This is a local greeting, " + name + "!";
+} 

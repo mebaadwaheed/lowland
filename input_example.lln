@@ -1,0 +1,17 @@
+// Example demonstrating the inputln() function
+
+println("What is your name?");
+let name: string = inputln();
+
+println("Hello,", name + "!");
+
+println("How old are you?");
+let age_str: string = inputln();
+
+// We would need type conversion to treat age as an int, e.g., to_int(age_str)
+// For now, just echo it as a string.
+println(name, "is", age_str, "years old.");
+
+println("Enter a sentence:");
+let sentence: string = inputln();
+println("You entered:", sentence); 

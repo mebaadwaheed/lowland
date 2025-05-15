@@ -1,0 +1,101 @@
+// Lowland Calculator
+
+// Function to display the menu
+func display_menu() {
+    println("=====================");
+    println("Lowland Calculator");
+    println("=====================");
+    println("1. Add");
+    println("2. Subtract");
+    println("3. Multiply");
+    println("4. Divide");
+    println("5. Exponentiate");
+    println("6. Modulo");
+    println("0. Exit");
+    println("=====================");
+}
+
+// Function to get a number from the user
+func get_number(prompt: string): int {
+    println(prompt);
+    let& input_str: string = "";
+    let& num: int = 0;
+    let& valid_input: bool = false;
+
+    while (!valid_input) {
+        input_str = inputln();
+        // Basic error check: to_int will handle non-numeric, but we can check for empty.
+        if (input_str == "") { // Simplistic check for empty string, to_int will provide robust error handling
+            println("Input cannot be empty. Please enter a number.");
+        } else {
+            // Attempt conversion. If to_int fails, it will print an error and the loop will implicitly handle it
+            // by not setting valid_input to true, or we can add explicit error checking if to_int returns a special value.
+            // For now, assume to_int handles errors by potentially halting or returning a value that indicates error.
+            // A more robust system would have to_int return an optional or result type.
+            num = to_int(input_str); // If to_int causes an error, this line might not complete as expected.
+                                   // This script relies on to_int erroring out if conversion fails.
+            valid_input = true; // Assume valid if to_int doesn't error out. A more robust to_int might return error/status.
+        }
+    }
+    return num;
+}
+
+// Main calculator loop
+let& choice: int = -1;
+
+while (choice != 0) {
+    display_menu();
+    println("Enter your choice:");
+    let choice_str: string = inputln();
+
+    if (choice_str == "") {
+        println("Invalid choice. Please try again.");
+        continue; // Skip the rest of this iteration and show menu again
+    }
+    choice = to_int(choice_str);
+
+    if (choice == 0) {
+        println("Exiting Calculator. Goodbye!");
+        break;
+    }
+
+    if (choice < 1 || choice > 6) {
+        println("Invalid choice. Please select an option from 0 to 6.");
+        continue;
+    }
+
+    let num1: int = get_number("Enter the first number:");
+    let num2: int = get_number("Enter the second number:");
+    let& result: int = 0;
+
+    if (choice == 1) { // Add
+        result = num1 + num2;
+        println(num1, "+", num2, "=", result);
+    } elif (choice == 2) { // Subtract
+        result = num1 - num2;
+        println(num1, "-", num2, "=", result);
+    } elif (choice == 3) { // Multiply
+        result = num1 * num2;
+        println(num1, "*", num2, "=", result);
+    } elif (choice == 4) { // Divide
+        if (num2 == 0) {
+            println("Error: Division by zero!");
+        } else {
+            result = num1 / num2;
+            println(num1, "/", num2, "=", result);
+        }
+    } elif (choice == 5) { // Exponentiate
+        result = num1 ** num2;
+        println(num1, "**", num2, "=", result);
+    } elif (choice == 6) { // Modulo
+         if (num2 == 0) {
+            println("Error: Modulo by zero!");
+        } else {
+            result = num1 % num2;
+            println(num1, "%", num2, "=", result);
+        }
+    }
+
+    println("Press Enter to continue...");
+    inputln(); // Pause until user presses Enter
+} 

@@ -1,0 +1,15 @@
+export func feature_a(): string {
+    return "Feature A executed";
+}
+
+func helper_for_a(): string {
+    return "Helper for A";
+}
+
+export func feature_b(): string {
+    return "Feature B executed";
+}
+
+export func common_util(): string {
+    return "Common Utility";
+} 
