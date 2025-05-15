@@ -1,0 +1,46 @@
+// Test file for string escape sequences
+
+println("=== String Escape Sequence Tests ===");
+
+// Newline
+println("Line 1\nLine 2");
+
+// Tab
+println("Columns:\tA\tB\tC");
+
+// Carriage return
+println("Before\rAfter");
+
+// Backslash
+println("Escaped backslash: \\");
+
+// Double quotes
+println("He said: \"Hello, world!\"");
+
+// Single quotes
+println("It\'s a nice day");
+
+// Null character
+println("Text with null \0 character");
+
+// Combined escape sequences
+println("Combined: \t\"quoted\"\nNew line\rCarriage return\\backslash");
+
+// Using toString with escaped strings
+println("toString() with escapes:", toString("Hello\nWorld"));
+
+// String concatenation with escaped strings
+let str1: string = "First\nLine";
+let str2: string = "Second\nLine";
+println("Concatenated strings: " + str1 + "\n" + str2);
+
+// Assignment with escaped strings
+let& escaped_string: string = "This has a tab:\tthat's it!";
+println(escaped_string);
+
+// Function with escaped string parameter
+func print_escaped(s: string) {
+    println("Function received: " + s);
+}
+
+print_escaped("Function\nargument\twith\\resc\\apes"); 

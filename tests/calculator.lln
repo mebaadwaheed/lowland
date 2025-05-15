@@ -24,17 +24,17 @@ func get_number(prompt: string): int {
 
     while (!valid_input) {
         input_str = inputln();
-        // Basic error check: to_int will handle non-numeric, but we can check for empty.
-        if (input_str == "") { // Simplistic check for empty string, to_int will provide robust error handling
+        // Basic error check: toInt will handle non-numeric, but we can check for empty.
+        if (input_str == "") { // Simplistic check for empty string, toInt will provide robust error handling
             println("Input cannot be empty. Please enter a number.");
         } else {
-            // Attempt conversion. If to_int fails, it will print an error and the loop will implicitly handle it
-            // by not setting valid_input to true, or we can add explicit error checking if to_int returns a special value.
-            // For now, assume to_int handles errors by potentially halting or returning a value that indicates error.
-            // A more robust system would have to_int return an optional or result type.
-            num = to_int(input_str); // If to_int causes an error, this line might not complete as expected.
-                                   // This script relies on to_int erroring out if conversion fails.
-            valid_input = true; // Assume valid if to_int doesn't error out. A more robust to_int might return error/status.
+            // Attempt conversion. If toInt fails, it will print an error and the loop will implicitly handle it
+            // by not setting valid_input to true, or we can add explicit error checking if toInt returns a special value.
+            // For now, assume toInt handles errors by potentially halting or returning a value that indicates error.
+            // A more robust system would have toInt return an optional or result type.
+            num = toInt(input_str); // Changed from to_int to toInt
+                                   // This script relies on toInt erroring out if conversion fails.
+            valid_input = true; // Assume valid if toInt doesn't error out. A more robust toInt might return error/status.
         }
     }
     return num;
@@ -52,7 +52,7 @@ while (choice != 0) {
         println("Invalid choice. Please try again.");
         continue; // Skip the rest of this iteration and show menu again
     }
-    choice = to_int(choice_str);
+    choice = toInt(choice_str); // Changed from to_int to toInt
 
     if (choice == 0) {
         println("Exiting Calculator. Goodbye!");

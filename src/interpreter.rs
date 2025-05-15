@@ -1,17 +1,17 @@
-use crate::ast::{Expr, Parameter, Program, Stmt};
-use crate::error::Error;
+use crate::ast::{Expr, ExprKind, Program, Stmt, StmtKind, Parameter};
+use crate::error::{Error, ErrorCode, SourceLocation};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::token::TokenType;
+use crate::token::{TokenType, Token};
 use crate::types::Type;
 use crate::value::{Value, ListRef, ObjectRef};
 use colored::Colorize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::fs;
 use std::path::{PathBuf};
 use std::rc::Rc;
-use std::cell::RefCell;
-use std::io;
+use std::cell::{RefCell, Ref, RefMut};
+use std::io::{self, Write};
 
 /// Represents a variable with its type, value, and mutability
 #[derive(Clone, Debug)]
@@ -26,7 +26,7 @@ struct Variable {
 struct Function {
     name: String,
     parameters: Vec<Parameter>,
-    return_type: Option<Type>,
+    return_type: Type,
     body: Box<Stmt>,
     is_exported: bool,
 }
@@ -44,6 +44,9 @@ pub struct Interpreter {
 
     /// Cache for module exports. Maps absolute file path to its exported functions.
     module_cache: Rc<RefCell<HashMap<PathBuf, Vec<Function>>>>,
+
+    /// Stores imported standard library symbols, mapping alias to canonical name (e.g. "sqrt" -> "std::math::sqrt")
+    imported_std_symbols: HashMap<String, String>,
 }
 
 impl Interpreter {
@@ -53,6 +56,7 @@ impl Interpreter {
             functions: HashMap::new(),
             current_file_path: None,
             module_cache: Rc::new(RefCell::new(HashMap::new())),
+            imported_std_symbols: HashMap::new(),
         }
     }
 
@@ -61,21 +65,34 @@ impl Interpreter {
         let initial_path = PathBuf::from(file_path_str);
         let canonical_path = match fs::canonicalize(&initial_path) {
             Ok(p) => p,
-            Err(e) => return Err(Error::RuntimeError(format!("Error accessing file {}: {}", file_path_str, e))),
+            Err(e) => return Err(Error::io(
+                ErrorCode::I0001, // File not found or general access error
+                format!("Error accessing file {}: {}", file_path_str, e),
+                None, // No specific source line for this type of error yet
+            )),
         };
 
         let source = match fs::read_to_string(&canonical_path) {
             Ok(s) => s,
-            Err(e) => return Err(Error::RuntimeError(format!("Error reading file {}: {}", canonical_path.display(), e))),
+            Err(e) => return Err(Error::io(
+                ErrorCode::I0003, // Read error
+                format!("Error reading file {}: {}", canonical_path.display(), e),
+                None,
+            )),
         };
         
-        // Clear included_files for a new top-level interpretation run
-        self.module_cache.borrow_mut().clear();
+        {
+            // Scope for module_cache_refmut to ensure it's dropped before mutable borrow of self
+            let mut module_cache_refmut = (*self.module_cache).borrow_mut();
+            module_cache_refmut.clear();
+        }
+        // module_cache_refmut is dropped here
         
         match self.interpret_source_with_path(&source, Some(canonical_path.clone())) {
             Ok((val, defined_functions)) => {
-                // For the top-level file, all its defined functions are directly available.
                 for func_def in defined_functions {
+                    // The name token is now in func_def.parameters and func_def.body (via Stmt.loc)
+                    // func_def.name is still a String from the AST name_token.lexeme
                     self.functions.insert(func_def.name.clone(), func_def);
                 }
                 Ok(val)
@@ -98,19 +115,18 @@ impl Interpreter {
         let old_path = self.current_file_path.clone();
         self.current_file_path = path;
 
-        // 1. Tokenize
         let mut lexer = Lexer::new(source);
         let tokens = lexer.scan_tokens()?;
+        // For debugging tokens:
+        // for token in &tokens { println!("{:?}", token); }
 
-        // 2. Parse
         let mut parser = Parser::new(tokens);
         let program = parser.parse()?;
 
-        // 3. Execute
         let result = self.execute_program(&program)?;
 
-        self.current_file_path = old_path; // Restore old path
-        Ok(result) // result is now (Value, Vec<Function>)
+        self.current_file_path = old_path;
+        Ok(result)
     }
 
     /// Execute a whole program
@@ -119,1123 +135,1469 @@ impl Interpreter {
         let mut last_value = Value::Null;
         let mut defined_functions_in_program = Vec::new();
 
-        // First pass: Define all functions from this program into a temporary holding
-        // This is important because Stmt::Function execution in the main loop below
-        // would add them to self.functions, which is not what we want for includes immediately.
-        for stmt in &program.statements {
-            if let Stmt::Function(name, parameters, return_type, body, is_exported) = stmt {
+        // First pass: Collect and register all function definitions from the current program
+        // into self.functions so they are available for calls within this same program.
+        for stmt_node in &program.statements {
+            if let StmtKind::Function { name_token, parameters, return_type, body, is_exported } = &stmt_node.kind {
                 let func_def = Function {
-                    name: name.clone(),
+                    name: name_token.lexeme.clone(),
                     parameters: parameters.clone(),
                     return_type: return_type.clone(),
                     body: body.clone(),
                     is_exported: *is_exported,
                 };
+                // Add to the interpreter's main function map immediately.
+                // Note: This allows simple function redefinition by overwriting. 
+                // Consider adding a warning or error for redefinitions if desired.
+                self.functions.insert(func_def.name.clone(), func_def.clone());
+                
+                // Still collect them to return, potentially for module systems or external introspection.
                 defined_functions_in_program.push(func_def);
             }
         }
 
-        // Second pass: Execute all statements
-        // For Stmt::Function, this will now add them to the *current* interpreter's function map.
-        // This is fine for the top-level file, and for includes, these will be filtered by the caller.
-        for stmt in &program.statements {
-            match self.execute_statement(stmt) {
+        // Second pass: Execute all statements (including function calls which can now find definitions)
+        for stmt_node in &program.statements { 
+            // Function definitions are handled in the first pass; they don't "execute" to a value here.
+            if let StmtKind::Function {..} = &stmt_node.kind {
+                continue; 
+            }
+
+            match self.execute_statement(stmt_node) {
                 Ok(value) => last_value = value,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    // Handle control flow errors that should not stop execution of sibling statements
+                    // This logic might need refinement based on how ReturnControlFlow is used by execute_statement
+                    match err {
+                        Error::ReturnControlFlow(_) => return Err(err), // Propagate return upwards immediately
+                        Error::BreakControlFlow => return Err(err), // Propagate break upwards
+                        Error::ContinueControlFlow => return Err(err), // Propagate continue upwards
+                        _ => return Err(err), // Other errors are fatal for the program execution
+                    }
+                }
             }
         }
-
         Ok((last_value, defined_functions_in_program))
     }
 
     /// Execute a single statement
-    fn execute_statement(&mut self, stmt: &Stmt) -> Result<Value, Error> {
-        match stmt {
-            Stmt::Expression(expr) => self.evaluate_expression(expr),
-            Stmt::Println(exprs) => {
-                // Evaluate all expressions
-                let mut values = Vec::with_capacity(exprs.len());
+    fn execute_statement(&mut self, stmt_node: &Stmt) -> Result<Value, Error> {
+        let stmt_loc = stmt_node.loc.clone(); // Common location for errors from this statement
+
+        match &stmt_node.kind {
+            StmtKind::Expression(expr) => self.evaluate_expression(expr),
+            StmtKind::Println(exprs) => {
+                let mut values_to_print = Vec::with_capacity(exprs.len());
                 for expr in exprs {
-                    values.push(self.evaluate_expression(expr)?);
+                    values_to_print.push(self.evaluate_expression(expr)?);
                 }
-                
-                // Print all values
-                if values.is_empty() {
+                if values_to_print.is_empty() {
                     println!();
                 } else {
-                    // Format and print the values
-                    let mut formatted = Vec::with_capacity(values.len());
-                    for value in &values {
-                        formatted.push(value.to_string_value()?);
-                    }
-                    let output = formatted.join(" ");
-                    println!("{}", output.green());
+                    let formatted_values: Vec<String> = values_to_print.iter()
+                        .map(|v| v.to_string_value().unwrap_or_else(|_| "<unprintable>".to_string())) // Handle potential error from to_string_value
+                        .collect();
+                    println!("{}", formatted_values.join(" ").green());
                 }
-                
                 Ok(Value::Null)
             },
-            Stmt::Var(name, var_type, initializer, is_mutable) => {
-                // Evaluate the initializer if present
+            StmtKind::PrintRaw(exprs) => { // New handler for PrintRaw
+                let mut raw_values_to_print = Vec::with_capacity(exprs.len());
+                for expr in exprs {
+                    raw_values_to_print.push(self.evaluate_expression(expr)?);
+                }
+                if raw_values_to_print.is_empty() {
+                    // Print a newline, consistent with println!() in Rust if no args
+                    println!(); 
+                } else {
+                    let formatted_raw_values: Vec<String> = raw_values_to_print.iter()
+                        .map(|v| v.to_raw_display_string().unwrap_or_else(|_| "<unprintable_raw>".to_string()))
+                        .collect();
+                    // Print exactly as joined, then a newline. No coloring for raw.
+                    println!("{}", formatted_raw_values.join(" "));
+                }
+                Ok(Value::Null)
+            },
+            StmtKind::Var { name_token, var_type, initializer, is_mutable } => {
                 let value = match initializer {
-                    Some(expr) => self.evaluate_expression(expr)?,
-                    None => Value::Null, // Default value for mutable variables
+                    Some(init_expr) => self.evaluate_expression(init_expr)?,
+                    None => {
+                        // Implicit initialization to null/default only if mutable or if language rules allow
+                        // For now, assuming uninitialized non-mutable is fine until first assignment if language allows, or default.
+                        // Let's stick to Value::Null as a default for uninitialized.
+                        Value::Null 
+                    }
                 };
                 
-                // Check if the type matches
                 let value_type = value.get_type();
-                if !var_type.is_compatible_with(&value_type) && value != Value::Null {
-                    return Err(Error::TypeError(format!(
-                        "Cannot assign value of type {} to variable of type {}",
-                        value_type, var_type
-                    )));
+                if value != Value::Null && !var_type.is_compatible_with(&value_type) {
+                    // If Value is Null, it's compatible with any type upon declaration (represents uninitialized)
+                    return Err(Error::type_error(
+                        ErrorCode::T0001, // Type mismatch
+                        format!("Cannot initialize variable '{}' of type {} with value of type {}.", name_token.lexeme, var_type, value_type),
+                        Some(initializer.as_ref().map_or_else(|| stmt_loc, |e| e.loc.clone())),
+                    ));
                 }
                 
-                // Add the variable to the environment
                 self.environment.insert(
-                    name.clone(),
+                    name_token.lexeme.clone(),
                     Variable {
                         var_type: var_type.clone(),
                         value,
                         is_mutable: *is_mutable,
                     },
                 );
-                
                 Ok(Value::Null)
             },
-            Stmt::Block(statements) => {
-                let environment_at_block_start = self.environment.clone(); // For restoring on "true" errors
-                let mut last_value = Value::Null;
+            StmtKind::Block(statements) => {
+                // Environment scoping for blocks: Create a new scope or manage variable lifetimes.
+                // The current code clones the entire environment for restoration on error.
+                // A more typical approach for lexical scoping is to push a new env layer and pop it.
+                // For simplicity, the clone-and-restore-on-error is kept, but this has implications
+                // for how variables defined inside a block persist or shadow outer ones.
+                // This model does not automatically handle shadowing or popping scopes on exit without error.
+                // This needs to be implemented if true lexical scoping is desired for blocks.
+                // For now, let's assume this basic environment handling from the original code is intended.
+                let environment_at_block_start = self.environment.clone();
+                let mut last_block_value = Value::Null;
 
-                for statement in statements {
-                    match self.execute_statement(statement) {
-                        Ok(value) => last_value = value,
-                        Err(err) => {
-                            // Check the type of error
-                            match &err {
-                                Error::BreakError | Error::ContinueError => {
-                                    // For loop control flow, do NOT restore environment here.
-                                    // Propagate the error; the loop construct will handle it.
-                                    return Err(err);
-                                }
-                                Error::RuntimeError(msg) if msg.starts_with("return:") => {
-                                    // For return statements, also do NOT restore environment here.
-                                    // Propagate the error; the function call handler will manage scope.
-                                    return Err(err);
-                                }
-                                _ => {
-                                    // For all other "true" errors originating within this block,
-                                    // restore the environment to its state at the start of the block.
-                                    self.environment = environment_at_block_start;
-                                    return Err(err);
-                                }
-                            }
+                for inner_stmt_node in statements {
+                    match self.execute_statement(inner_stmt_node) {
+                        Ok(val) => last_block_value = val,
+                        Err(Error::ReturnControlFlow(ret_val)) => { // Propagate return
+                            self.environment = environment_at_block_start; // Restore env before propagating return from block
+                            return Err(Error::ReturnControlFlow(ret_val));
+                        },
+                        Err(Error::BreakControlFlow) => { // Propagate break
+                            self.environment = environment_at_block_start;
+                            return Err(Error::BreakControlFlow);
+                        },
+                        Err(Error::ContinueControlFlow) => { // Propagate continue
+                            self.environment = environment_at_block_start;
+                            return Err(Error::ContinueControlFlow);
+                        },
+                        Err(true_err) => { // Any other actual error
+                            self.environment = environment_at_block_start;
+                            return Err(true_err);
                         }
                     }
                 }
-                // On successful completion of the block (no errors propagated out),
-                // modifications to the environment (including outer scope variables) persist.
-                // The calling context (e.g., a loop or function) is responsible for its own
-                // broader scope management if needed.
-                Ok(last_value)
+                // If block completes normally, changes to environment persist (as per current model).
+                Ok(last_block_value)
             },
-            Stmt::If(condition, then_branch, elif_branches, else_branch) => {
-                // Evaluate the condition
-                let condition_value = self.evaluate_expression(condition)?;
-                
-                // Check if the condition is a boolean
-                if let Value::Bool(is_true) = condition_value {
-                    if is_true {
-                        // Execute the then branch
-                        return self.execute_statement(then_branch);
+            StmtKind::If { condition, then_branch, elif_branches, else_branch } => {
+                let cond_value = self.evaluate_expression(condition)?;
+                let cond_loc = condition.loc.clone();
+
+                if let Value::Bool(cond_bool) = cond_value {
+                    if cond_bool {
+                        self.execute_statement(then_branch)
                     } else {
-                        // Try the elif branches
-                        for (elif_condition, elif_branch) in elif_branches {
-                            let elif_value = self.evaluate_expression(elif_condition)?;
-                            
-                            if let Value::Bool(elif_is_true) = elif_value {
-                                if elif_is_true {
-                                    // Execute this elif branch
-                                    return self.execute_statement(elif_branch);
+                        let mut executed_elif = false;
+                        for (elif_cond_expr, elif_branch_stmt) in elif_branches {
+                            let elif_cond_value = self.evaluate_expression(elif_cond_expr)?;
+                            let elif_cond_loc = elif_cond_expr.loc.clone();
+                            if let Value::Bool(elif_bool) = elif_cond_value {
+                                if elif_bool {
+                                    executed_elif = true;
+                                    self.execute_statement(elif_branch_stmt)?;
+                                    break;
                                 }
                             } else {
-                                return Err(Error::TypeError(
-                                    "Elif condition must be a boolean".to_string()
+                                return Err(Error::type_error(
+                                    ErrorCode::T0005, // Expected boolean condition
+                                    format!("Elif condition must be a boolean, found {}.", elif_cond_value.get_type()),
+                                    Some(elif_cond_loc),
                                 ));
                             }
                         }
-                        
-                        // If no elif branches matched, try the else branch
-                        if let Some(else_branch) = else_branch {
-                            return self.execute_statement(else_branch);
+                        if !executed_elif && else_branch.is_some() {
+                            self.execute_statement(else_branch.as_ref().unwrap())
+                        } else {
+                            Ok(Value::Null)
                         }
                     }
                 } else {
-                    return Err(Error::TypeError(
-                        "If condition must be a boolean".to_string()
-                    ));
+                    Err(Error::type_error(
+                        ErrorCode::T0005, // Expected boolean condition
+                        format!("If condition must be a boolean, found {}.", cond_value.get_type()),
+                        Some(cond_loc),
+                    ))
                 }
-                
+            },
+            StmtKind::Function { name_token, parameters, return_type, body, is_exported } => {
+                // Function declaration itself doesn't produce a value at this stage
+                // It's registered during execute_program or by an import mechanism
+                // However, we need to ensure this new Function struct is created and stored.
+                // This is already handled in execute_program. Here, we just acknowledge it.
+                let _ = name_token;
+                let _ = parameters;
+                let _ = return_type;
+                let _ = body;
+                let _ = is_exported;
                 Ok(Value::Null)
             },
-            Stmt::Function(_name, _parameters, _return_type, _body, _is_exported) => {
-                // When a Stmt::Function is executed, it doesn't immediately add to self.functions here.
-                // The execute_program collects all function definitions, and the caller 
-                // (interpret_file for top-level, or Stmt::Including for includes) decides how to use them.
-                Ok(Value::Null)
-            },
-            Stmt::Return(expr) => {
-                // Evaluate the return value if present
-                let value = match expr {
+            StmtKind::Return(value_expr) => {
+                let return_val = match value_expr {
                     Some(expr) => self.evaluate_expression(expr)?,
                     None => Value::Null,
                 };
-                
-                // Create a special error to unwind the call stack
-                Err(Error::RuntimeError(format!("return: {}", value)))
+                // Special error to propagate return value
+                Err(Error::ReturnControlFlow(Box::new(return_val)))
             },
-            Stmt::While(condition, body) => {
-                // Execute the loop as long as the condition is true
-                'outer: loop {
-                    // Evaluate the condition
-                    let condition_value = self.evaluate_expression(condition)?;
-                    
-                    // Check if the condition is a boolean
-                    if let Value::Bool(is_true) = condition_value {
-                        if !is_true {
-                            // Exit the loop if the condition is false
-                            break 'outer;
+            StmtKind::While { condition, body } => {
+                loop {
+                    let cond_value = self.evaluate_expression(condition)?;
+                    let cond_loc = condition.loc.clone();
+
+                    if let Value::Bool(cond_bool) = cond_value {
+                        if !cond_bool {
+                            break; // Exit loop
                         }
-                        
-                        // Execute the body
                         match self.execute_statement(body) {
-                            Ok(_) => {},
-                            // Special case for return statements
-                            Err(ref err @ Error::RuntimeError(ref msg)) if msg.starts_with("return: ") => {
-                                return Err(err.clone());
-                            },
-                            // Handle break - this should exit the outer loop
-                            Err(Error::BreakError) => {
-                                break 'outer;
-                            },
-                            // Handle continue
-                            Err(Error::ContinueError) => continue 'outer,
-                            // Other errors
-                            Err(err) => return Err(err),
+                            Ok(_) => {} // Continue loop
+                            Err(Error::BreakControlFlow) => break, // Break from while loop
+                            Err(Error::ContinueControlFlow) => continue, // Continue to next iteration of while
+                            Err(e) => return Err(e), // Propagate other errors
                         }
                     } else {
-                        return Err(Error::TypeError(
-                            "While condition must be a boolean".to_string()
+                        return Err(Error::type_error(
+                            ErrorCode::T0005, // Expected boolean condition
+                            format!("While condition must be a boolean, found {}.", cond_value.get_type()),
+                            Some(cond_loc),
                         ));
                     }
                 }
-                
-                Ok(Value::Null)
+                Ok(Value::Null) 
             },
-            Stmt::For(initializer, condition, increment, body) => {
-                // Create a new scope for the loop
-                let old_environment = self.environment.clone();
-                
-                // Execute the initializer
-                match self.execute_statement(initializer) {
-                    Ok(_) => {},
-                    Err(err) => {
-                        // Restore the environment and propagate the error
-                        self.environment = old_environment;
-                        return Err(err);
-                    }
+            StmtKind::For { initializer, condition, increment, body } => {
+                // For loop environment scoping can be tricky. 
+                // Create a new scope for the initializer and the loop itself.
+                let outer_env = self.environment.clone();
+
+                if let Some(init_stmt) = initializer {
+                    self.execute_statement(init_stmt)?; // Initializer runs in the new scope
                 }
-                
-                // Execute the loop
-                let result = 'outer: loop {
-                    // Evaluate the condition
-                    let condition_value = self.evaluate_expression(condition)?;
-                    
-                    // Check if the condition is a boolean
-                    if let Value::Bool(is_true) = condition_value {
-                        if !is_true {
-                            // Exit the loop if the condition is false
-                            break 'outer Ok(Value::Null);
+
+                loop {
+                    let loop_cond_val = match condition {
+                        Some(cond_expr) => self.evaluate_expression(cond_expr)?,
+                        None => Value::Bool(true), // No condition means infinite loop (until break)
+                    };
+                    let cond_loc = condition.as_ref().map_or_else(|| stmt_loc.clone(), |c| c.loc.clone());
+
+                    if let Value::Bool(continue_loop) = loop_cond_val {
+                        if !continue_loop {
+                            break; // Exit loop
                         }
-                        
-                        // Execute the body
-                        let mut continued = false;
+
                         match self.execute_statement(body) {
                             Ok(_) => {},
-                            // Special case for return statements
-                            Err(ref err @ Error::RuntimeError(ref msg)) if msg.starts_with("return: ") => {
-                                // Restore the environment and propagate the error
-                                self.environment = old_environment;
-                                return Err(err.clone());
+                            Err(Error::BreakControlFlow) => break, // Break from for loop
+                            Err(Error::ContinueControlFlow) => { // Continue to increment part of for
+                                // Execute increment before continuing
+                                if let Some(inc_expr) = increment {
+                                    self.evaluate_expression(inc_expr)?;
+                                }
+                                continue;
                             },
-                            // Handle break
-                            Err(Error::BreakError) => {
-                                break 'outer Ok(Value::Null);
-                            },
-                            // Handle continue
-                            Err(Error::ContinueError) => {
-                                continued = true;
-                                // The increment will be handled below, then we will continue.
-                            },
-                            // Other errors
-                            Err(err) => {
-                                // Restore the environment and propagate the error
-                                self.environment = old_environment;
-                                return Err(err);
+                            Err(e) => { 
+                                self.environment = outer_env; // Restore env on error
+                                return Err(e); 
                             }
                         }
-                        
-                        // Always execute the increment part of the for loop here
-                        if let Err(err) = self.evaluate_expression(increment) {
-                            self.environment = old_environment;
-                            return Err(err);
-                        }
 
-                        // If continue was signaled, jump to the next iteration now
-                        if continued {
-                            continue 'outer;
+                        if let Some(inc_expr) = increment {
+                            self.evaluate_expression(inc_expr)?;
                         }
-
                     } else {
-                        // Restore the environment and propagate the error
-                        self.environment = old_environment;
-                        return Err(Error::TypeError(
-                            "For condition must be a boolean".to_string()
+                        self.environment = outer_env; // Restore env on error
+                        return Err(Error::type_error(
+                            ErrorCode::T0005, // Expected boolean condition
+                            format!("For loop condition must be boolean, found {}.", loop_cond_val.get_type()),
+                            Some(cond_loc),
                         ));
                     }
-                };
-                
-                // Restore the environment
-                self.environment = old_environment;
-                
-                result
-            },
-            Stmt::Break => Err(Error::BreakError),
-            Stmt::Continue => Err(Error::ContinueError),
-            Stmt::Including { path: path_str, imports } => {
-                let current_dir = match &self.current_file_path {
-                    Some(p) => p.parent().ok_or_else(|| Error::RuntimeError(
-                        format!("Could not determine directory of current file: {}", p.display())
-                    ))?,
-                    None => return Err(Error::RuntimeError(
-                        "'including' statement can only be used from within a file, not in REPL without a loaded file context.".to_string()
-                    )),
-                };
-
-                let included_file_initial_path = current_dir.join(path_str);
-                let included_file_abs_path = match fs::canonicalize(&included_file_initial_path) {
-                    Ok(p) => p,
-                    Err(e) => return Err(Error::RuntimeError(format!(
-                        "Error accessing included file '{}' (resolved to '{}'): {}", 
-                        path_str, included_file_initial_path.display(), e
-                    ))),
-                };
-
-                let functions_to_process_for_import: Vec<Function>;
-                let mut all_functions_from_module_if_cache_miss: Option<Vec<Function>> = None;
-
-                // Explicitly scope the cache read
-                let opt_cached_functions = {
-                    let cache_reader = self.module_cache.borrow();
-                    cache_reader.get(&included_file_abs_path).cloned() // .cloned() is important if Vec<Function> is to be owned
-                }; // cache_reader (Ref) is dropped here
-
-                if let Some(cached_exported_functions) = opt_cached_functions {
-                    functions_to_process_for_import = cached_exported_functions;
-                } else {
-                    // Cache miss: process the file
-                    let included_source = match fs::read_to_string(&included_file_abs_path) {
-                        Ok(s) => s,
-                        Err(e) => return Err(Error::RuntimeError(format!(
-                            "Error reading included file '{}': {}", included_file_abs_path.display(), e
-                        ))),
-                    };
-                    
-                    // Create a temporary, clean interpreter for the module.
-                    // It shares the module_cache so nested includes also populate the main cache.
-                    let mut module_interpreter = Interpreter {
-                        environment: HashMap::new(), // Fresh environment
-                        functions: HashMap::new(),   // Fresh function map
-                        current_file_path: None,     // Will be set by interpret_source_with_path
-                        module_cache: Rc::clone(&self.module_cache), // Share the cache
-                    };
-
-                    match module_interpreter.interpret_source_with_path(&included_source, Some(included_file_abs_path.clone())) {
-                        Ok((_value, all_defined_functions_in_module)) => {
-                            all_functions_from_module_if_cache_miss = Some(all_defined_functions_in_module.clone());
-
-                            let exported_functions_vec = all_defined_functions_in_module.into_iter()
-                                .filter(|f| f.is_exported)
-                                .collect::<Vec<Function>>();
-                            
-                            // This is the critical point for the borrow_mut() call.
-                            // The immutable borrow from the initial cache check by 'self' is now definitely gone.
-                            self.module_cache.borrow_mut().insert(included_file_abs_path.clone(), exported_functions_vec.clone());
-                            functions_to_process_for_import = exported_functions_vec;
-                        }
-                        Err(e) => {
-                            return Err(Error::RuntimeError(format!(
-                                "Error in included file '{}':
-{}", 
-                                included_file_abs_path.display(), e
-                            )));
-                        }
-                    }
                 }
-                
-                // Perform selective import error checking.
-                if let Some(ref import_tokens) = imports {
-                    for token in import_tokens {
-                        let requested_name = &token.lexeme;
-                        let found_in_exported = functions_to_process_for_import.iter().any(|f| f.name == *requested_name);
-
-                        if !found_in_exported {
-                            let err_msg = if let Some(ref all_funcs) = all_functions_from_module_if_cache_miss {
-                                // This was a cache miss path, provide detailed error.
-                                let was_defined_not_exported = all_funcs.iter().any(|f| f.name == *requested_name && !f.is_exported);
-                                if was_defined_not_exported {
-                                    format!("Cannot import '{}' from '{}': it is defined but not exported (line {}).", requested_name, path_str, token.line)
-                                } else {
-                                    format!("Cannot import '{}' from '{}': it is not defined (line {}).", requested_name, path_str, token.line)
-                                }
-                            } else {
-                                // This was a cache hit path. We only know about exported functions.
-                                format!("Cannot import '{}' from '{}': it is not defined or not exported (line {}).", requested_name, path_str, token.line)
-                            };
-                            return Err(Error::RuntimeError(err_msg));
-                        }
-                    }
-                }
-
-                // Add functions to the current scope's function map.
-                let mut functions_to_add_to_current_scope = Vec::new();
-                if let Some(import_tokens) = imports {
-                    // Selective import: including [ id1, id2 ] from "..."
-                    let requested_names: HashSet<String> = import_tokens.iter().map(|t| t.lexeme.clone()).collect();
-                    for func_def in functions_to_process_for_import {
-                        if requested_names.contains(&func_def.name) {
-                            functions_to_add_to_current_scope.push(func_def);
-                        }
-                    }
-                } else {
-                    // Import all exported: including "..."
-                    functions_to_add_to_current_scope = functions_to_process_for_import;
-                }
-
-                for func_to_add in functions_to_add_to_current_scope {
-                    self.functions.insert(func_to_add.name.clone(), func_to_add);
-                }
+                self.environment = outer_env; // Restore environment after loop
                 Ok(Value::Null)
-            }
+            },
+            StmtKind::Break(break_token) => {
+                let _ = break_token; // Mark as unused if only its location (implicit in Stmt) matters
+                Err(Error::BreakControlFlow)
+            },
+            StmtKind::Continue(continue_token) => {
+                let _ = continue_token; // Mark as unused
+                Err(Error::ContinueControlFlow)
+            },
+            StmtKind::Including { path_token, path_val, imports } => {
+                let import_loc = SourceLocation::new(path_token.line, path_token.column);
+                if path_val == "standard" {
+                    if let Some(import_items) = imports {
+                        for qualified_name in import_items {
+                            match qualified_name.as_str() {
+                                "std::math::sqrt" => {
+                                    self.imported_std_symbols.insert("sqrt".to_string(), qualified_name.clone());
+                                }
+                                "std::math::abs" => {
+                                    self.imported_std_symbols.insert("abs".to_string(), qualified_name.clone());
+                                }
+                                "std::math::pow" => {
+                                    self.imported_std_symbols.insert("pow".to_string(), qualified_name.clone());
+                                }
+                                "std::math::floor" => {
+                                    self.imported_std_symbols.insert("floor".to_string(), qualified_name.clone());
+                                }
+                                "std::math" => {
+                                    // Import all math functions
+                                    let math_functions = [
+                                        ("sqrt", "std::math::sqrt"),
+                                        ("abs", "std::math::abs"),
+                                        ("pow", "std::math::pow"),
+                                        ("floor", "std::math::floor"),
+                                    ];
+                                    for (alias, canonical) in math_functions {
+                                        self.imported_std_symbols.insert(alias.to_string(), canonical.to_string());
+                                    }
+                                    
+                                    // Create a math object with all the functions
+                                    let mut math_obj = ObjectRef::new();
+                                    {
+                                        let mut props = (*math_obj.properties).borrow_mut();
+                                        for (alias, canonical) in math_functions {
+                                            props.insert(alias.to_string(), Value::StdFunctionLink(canonical.to_string()));
+                                        }
+                                    }
+                                    self.environment.insert("math".to_string(), Variable {
+                                        var_type: Type::Object,
+                                        value: Value::Object(math_obj),
+                                        is_mutable: false,
+                                    });
+                                }
+                                _ => {
+                                    return Err(Error::runtime(
+                                        ErrorCode::R0000, 
+                                        format!("Unknown standard library symbol '{}'.", qualified_name),
+                                        Some(import_loc.clone()), 
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(Error::syntax(
+                            ErrorCode::P0000, 
+                            "Specific symbols must be listed when including from \"standard\" (e.g., [std::math::sqrt] or [std::math]).".to_string(),
+                            Some(import_loc),
+                        ));
+                    }
+                    Ok(Value::Null)
+                } else {
+                    // Handle local file imports
+                    let current_dir = self.current_file_path.as_ref()
+                        .and_then(|p| p.parent())
+                        .ok_or_else(|| Error::runtime(
+                            ErrorCode::R0000,
+                            "Cannot determine current directory for relative imports.".to_string(),
+                            Some(import_loc.clone())
+                        ))?;
+
+                    let import_path = current_dir.join(&path_val);
+                    if !import_path.exists() {
+                        return Err(Error::runtime(
+                            ErrorCode::I0001,
+                            format!("File not found: {}", path_val),
+                            Some(import_loc.clone())
+                        ));
+                    }
+
+                    let source = fs::read_to_string(&import_path).map_err(|e| Error::io(
+                        ErrorCode::I0003,
+                        format!("Failed to read file '{}': {}", path_val, e),
+                        Some(import_loc.clone())
+                    ))?;
+
+                    // Interpret the imported file
+                    let (_, imported_functions) = self.interpret_source_with_path(&source, Some(import_path.clone()))?;
+
+                    // If specific imports are requested, filter the functions
+                    if let Some(requested_imports) = imports {
+                        for func in imported_functions {
+                            if func.is_exported {
+                                let func_name = func.name.clone();
+                                if requested_imports.contains(&func_name) {
+                                    self.functions.insert(func_name, func);
+                                }
+                            }
+                        }
+                    } else {
+                        // Import all exported functions
+                        for func in imported_functions {
+                            if func.is_exported {
+                                self.functions.insert(func.name.clone(), func);
+                            }
+                        }
+                    }
+
+                    Ok(Value::Null)
+                }
+            },
         }
     }
 
     /// Evaluate an expression to a value
-    fn evaluate_expression(&mut self, expr: &Expr) -> Result<Value, Error> {
-        match expr {
-            Expr::Literal(value) => Ok(value.clone()),
-            Expr::Grouping(expr) => self.evaluate_expression(expr),
-            Expr::Unary(operator, right) => {
-                let right = self.evaluate_expression(right)?;
+    fn evaluate_expression(&mut self, expr_node: &Expr) -> Result<Value, Error> {
+        let _expr_loc = expr_node.loc.clone(); // Common location for errors from this expression, marked unused for now
 
-                match operator.token_type {
-                    TokenType::Minus => {
-                        if let Value::Int(i) = right {
-                            return Ok(Value::Int(-i));
-                        }
-                        return Err(Error::TypeError(
-                            "Unary '-' operator can only be applied to integers".to_string(),
-                        ));
-                    }
+        match &expr_node.kind {
+            ExprKind::Literal(value) => Ok(value.clone()),
+            ExprKind::Grouping(expr) => self.evaluate_expression(expr),
+            ExprKind::Unary(operator_token, right_expr) => {
+                let right_val = self.evaluate_expression(right_expr)?;
+                let op_loc = SourceLocation::new(operator_token.line, operator_token.column);
+
+                match operator_token.token_type {
+                    TokenType::Minus => match right_val {
+                        Value::Int(num) => Ok(Value::Int(-num)),
+                        Value::Float(num) => Ok(Value::Float(-num)),
+                        _ => Err(Error::type_error(
+                            ErrorCode::T0002,
+                            format!("Unary '-' operator can only be applied to numbers, found {}.", right_val.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
                     TokenType::Bang => {
-                        if let Value::Bool(b) = right {
-                            return Ok(Value::Bool(!b));
+                        if let Value::Bool(boolean) = right_val {
+                            Ok(Value::Bool(!boolean))
+                        } else {
+                            Err(Error::type_error(
+                                ErrorCode::T0002, // Operation not supported for type
+                                format!("Unary '!' operator can only be applied to booleans, found {}.", right_val.get_type()),
+                                Some(op_loc),
+                            ))
                         }
-                        return Err(Error::TypeError(
-                            "Unary '!' operator can only be applied to booleans".to_string(),
+                    }
+                    _ => Err(Error::syntax(
+                        ErrorCode::P0000, // Generic syntax error or a new code for invalid unary op
+                        format!("Invalid unary operator '{}'.", operator_token.lexeme),
+                        Some(op_loc),
+                    )),
+                }
+            },
+            ExprKind::Variable(name_token) => {
+                if let Some(var_data) = self.environment.get(&name_token.lexeme) {
+                    Ok(var_data.value.clone())
+                } else {
+                    Err(Error::runtime(
+                        ErrorCode::R0001, // Undefined variable
+                        format!("Undefined variable '{}'.", name_token.lexeme),
+                        Some(SourceLocation::new(name_token.line, name_token.column)),
+                    ))
+                }
+            },
+            ExprKind::Assign { name_token, value } => {
+                let new_value = self.evaluate_expression(value)?;
+                let var_name = &name_token.lexeme;
+                let assign_loc = SourceLocation::new(name_token.line, name_token.column);
+
+                if let Some(var_data) = self.environment.get_mut(var_name) {
+                    if !var_data.is_mutable {
+                        return Err(Error::type_error(
+                            ErrorCode::T0004, // Variable not mutable
+                            format!("Variable '{}' is not mutable and cannot be reassigned.", var_name),
+                            Some(assign_loc),
                         ));
                     }
-                    _ => Err(Error::SyntaxError(
-                        "Invalid unary operator".to_string(),
-                    )),
+                    let new_value_type = new_value.get_type();
+                    if !var_data.var_type.is_compatible_with(&new_value_type) {
+                         return Err(Error::type_error(
+                            ErrorCode::T0001, // Type mismatch
+                            format!("Cannot assign value of type {} to variable '{}' of type {}.", new_value_type, var_name, var_data.var_type),
+                            Some(value.loc.clone()), // location of the value being assigned
+                        ));
+                    }
+                    var_data.value = new_value.clone();
+                    Ok(new_value)
+                } else {
+                    Err(Error::runtime(
+                        ErrorCode::R0001, // Undefined variable
+                        format!("Undefined variable '{}' cannot be assigned to.", var_name),
+                        Some(assign_loc),
+                    ))
                 }
-            }
-            Expr::Binary(left, operator, right) => {
-                let left = self.evaluate_expression(left)?;
-                let right = self.evaluate_expression(right)?;
+            },
+            ExprKind::Binary(left_expr, operator_token, right_expr) => {
+                let left_val = self.evaluate_expression(left_expr)?;
+                let right_val = self.evaluate_expression(right_expr)?;
+                let op_loc = SourceLocation::new(operator_token.line, operator_token.column);
 
-                match operator.token_type {
-                    // Arithmetic operators
-                    TokenType::Plus => {
-                        match (&left, &right) {
-                            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-                            (Value::String(a), Value::String(b)) => {
-                                Ok(Value::String(format!("{}{}", a, b)))
-                            }
-                            _ => Err(Error::TypeError(
-                                "'+' operator can only be applied to two integers or two strings"
-                                    .to_string(),
-                            )),
-                        }
-                    }
-                    TokenType::Minus => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Int(a - b));
-                        }
-                        Err(Error::TypeError(
-                            "'-' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::Star => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Int(a * b));
-                        }
-                        Err(Error::TypeError(
-                            "'*' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::StarStar => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            // Calculate a to the power of b
-                            let result = a.pow(*b as u32);
-                            return Ok(Value::Int(result));
-                        }
-                        Err(Error::TypeError(
-                            "'**' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::Slash => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            if *b == 0 {
-                                return Err(Error::RuntimeError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            return Ok(Value::Int(a / b));
-                        }
-                        Err(Error::TypeError(
-                            "'/' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::Modulo => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            if *b == 0 {
-                                return Err(Error::RuntimeError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            return Ok(Value::Int(a % b));
-                        }
-                        Err(Error::TypeError(
-                            "'%' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-
-                    // Comparison operators
-                    TokenType::EqualEqual => {
-                        match (&left, &right) {
-                            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a == b)),
-                            (Value::String(a), Value::String(b)) => Ok(Value::Bool(a == b)),
-                            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
-                            _ => Ok(Value::Bool(false)), // Different types are never equal
-                        }
-                    }
-                    TokenType::BangEqual => {
-                        match (&left, &right) {
-                            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a != b)),
-                            (Value::String(a), Value::String(b)) => Ok(Value::Bool(a != b)),
-                            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a != b)),
-                            _ => Ok(Value::Bool(true)), // Different types are never equal
-                        }
-                    }
-                    TokenType::Less => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Bool(a < b));
-                        }
-                        Err(Error::TypeError(
-                            "'<' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::LessEqual => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Bool(a <= b));
-                        }
-                        Err(Error::TypeError(
-                            "'<=' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::Greater => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Bool(a > b));
-                        }
-                        Err(Error::TypeError(
-                            "'>' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    TokenType::GreaterEqual => {
-                        if let (Value::Int(a), Value::Int(b)) = (&left, &right) {
-                            return Ok(Value::Bool(a >= b));
-                        }
-                        Err(Error::TypeError(
-                            "'>=' operator can only be applied to two integers".to_string(),
-                        ))
-                    }
-                    _ => Err(Error::SyntaxError(
-                        "Invalid binary operator".to_string(),
-                    )),
-                }
-            }
-            Expr::Logical(left, operator, right) => {
-                let left_val = self.evaluate_expression(left)?;
-
-                // Ensure left operand is a boolean for logical operators
-                if let Value::Bool(left_bool) = left_val {
-                    match operator.token_type {
-                        TokenType::PipePipe => {
-                            // Short-circuit OR: if left is true, result is true
-                            if left_bool {
-                                return Ok(Value::Bool(true));
-                            }
-                            // Otherwise, evaluate right and ensure it's a boolean
-                            let right_val = self.evaluate_expression(right)?;
-                            if let Value::Bool(right_bool) = right_val {
-                                return Ok(Value::Bool(right_bool));
+                match operator_token.token_type {
+                    TokenType::Plus => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Float(l + r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l + (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Float((l as f64) + r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Int(l + r)),
+                        (Value::String(l), Value::String(r)) => Ok(Value::String(format!("{}{}", l, r))),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '+' cannot be applied to types {} and {}. Expected two numbers or two strings.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::Minus => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Float(l - r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l - (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Float((l as f64) - r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Int(l - r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '-' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::Star => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Float(l * r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l * (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Float((l as f64) * r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Int(l * r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '*' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::StarStar => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Float(l.powf(r))),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l.powf(r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Float((l as f64).powf(r))),
+                        (Value::Int(l), Value::Int(r)) => {
+                            if r < 0 {
+                                // Negative exponent for integers would result in a float.
+                                // Or we can disallow or use f64::powf. Let's use f64 for this case.
+                                Ok(Value::Float((l as f64).powf(r as f64)))
                             } else {
-                                return Err(Error::TypeError(
-                                    "Right operand of || must be a boolean".to_string(),
-                                ));
+                                Ok(Value::Int(l.pow(r as u32))) // i64::pow expects u32
+                            }
+                        }
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '**' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::Slash => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => {
+                            if r == 0.0 {
+                                Err(Error::runtime(ErrorCode::R0002, "Division by zero.".to_string(), Some(op_loc)))
+                            } else {
+                                Ok(Value::Float(l / r))
+                            }
+                        }
+                        (Value::Float(l), Value::Int(r)) => {
+                            if r == 0 {
+                                Err(Error::runtime(ErrorCode::R0002, "Division by zero.".to_string(), Some(op_loc)))
+                            } else {
+                                Ok(Value::Float(l / (r as f64)))
+                            }
+                        }
+                        (Value::Int(l), Value::Float(r)) => {
+                            if r == 0.0 {
+                                Err(Error::runtime(ErrorCode::R0002, "Division by zero.".to_string(), Some(op_loc)))
+                            } else {
+                                Ok(Value::Float((l as f64) / r))
+                            }
+                        }
+                        (Value::Int(l), Value::Int(r)) => { // Integer division
+                            if r == 0 {
+                                Err(Error::runtime(ErrorCode::R0002, "Division by zero.".to_string(), Some(op_loc)))
+                            } else {
+                                Ok(Value::Int(l / r)) // This is integer division
+                            }
+                        }
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '/' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::Modulo => match (left_val, right_val) {
+                        // Modulo for floats can be fmod, but let's keep it for integers for now,
+                        // as its definition for floats can vary. If needed, can add later.
+                        (Value::Int(l), Value::Int(r)) => {
+                            if r == 0 {
+                                Err(Error::runtime(ErrorCode::R0007, "Modulo by zero.".to_string(), Some(op_loc)))
+                            } else {
+                                Ok(Value::Int(l % r))
+                            }
+                        }
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '%' can only be applied to two integers, found {} and {}.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::EqualEqual => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l == r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l == (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) == r)),
+                        // For other types, rely on Value::PartialEq (String, Bool, Int, Null, List/Object by ID)
+                        (l, r) => Ok(Value::Bool(l == r)), 
+                    },
+                    TokenType::BangEqual => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l != r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l != (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) != r)),
+                        (l, r) => Ok(Value::Bool(l != r)),
+                    },
+                    TokenType::Less => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l < r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l < (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) < r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Bool(l < r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '<' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::LessEqual => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l <= r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l <= (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) <= r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Bool(l <= r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '<=' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::Greater => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l > r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l > (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) > r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Bool(l > r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '>' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    TokenType::GreaterEqual => match (left_val, right_val) {
+                        (Value::Float(l), Value::Float(r)) => Ok(Value::Bool(l >= r)),
+                        (Value::Float(l), Value::Int(r)) => Ok(Value::Bool(l >= (r as f64))),
+                        (Value::Int(l), Value::Float(r)) => Ok(Value::Bool((l as f64) >= r)),
+                        (Value::Int(l), Value::Int(r)) => Ok(Value::Bool(l >= r)),
+                        (l, r) => Err(Error::type_error(
+                            ErrorCode::T0003,
+                            format!("Operator '>=' cannot be applied to types {} and {}. Expected two numbers.", l.get_type(), r.get_type()),
+                            Some(op_loc),
+                        )),
+                    },
+                    _ => Err(Error::syntax( 
+                        ErrorCode::P0000, // Or a new code for invalid binary operator
+                        format!("Invalid binary operator '{}'.", operator_token.lexeme),
+                        Some(op_loc),
+                    )),
+                }
+            },
+            ExprKind::Logical(left_expr, operator_token, right_expr) => {
+                let left_val = self.evaluate_expression(left_expr)?;
+                let op_loc = SourceLocation::new(operator_token.line, operator_token.column);
+
+                if let Value::Bool(left_bool) = left_val {
+                    match operator_token.token_type {
+                        TokenType::PipePipe => {
+                            if left_bool {
+                                Ok(Value::Bool(true))
+                            } else {
+                                let right_val = self.evaluate_expression(right_expr)?;
+                                if let Value::Bool(right_bool) = right_val {
+                                    Ok(Value::Bool(right_bool))
+                                } else {
+                                    Err(Error::type_error(
+                                        ErrorCode::T0005,
+                                        format!("Right operand of '||' must be a boolean, found {}.", right_val.get_type()),
+                                        Some(right_expr.loc.clone()),
+                                    ))
+                                }
                             }
                         }
                         TokenType::AmpersandAmpersand => {
-                            // Short-circuit AND: if left is false, result is false
                             if !left_bool {
-                                return Ok(Value::Bool(false));
-                            }
-                            // Otherwise, evaluate right and ensure it's a boolean
-                            let right_val = self.evaluate_expression(right)?;
-                            if let Value::Bool(right_bool) = right_val {
-                                return Ok(Value::Bool(right_bool));
+                                Ok(Value::Bool(false))
                             } else {
-                                return Err(Error::TypeError(
-                                    "Right operand of && must be a boolean".to_string(),
-                                ));
+                                let right_val = self.evaluate_expression(right_expr)?;
+                                if let Value::Bool(right_bool) = right_val {
+                                    Ok(Value::Bool(right_bool))
+                                } else {
+                                    Err(Error::type_error(
+                                        ErrorCode::T0005,
+                                        format!("Right operand of '&&' must be a boolean, found {}.", right_val.get_type()),
+                                        Some(right_expr.loc.clone()),
+                                    ))
+                                }
                             }
                         }
-                        _ => Err(Error::SyntaxError("Invalid logical operator".to_string())),
+                        _ => Err(Error::syntax(
+                            ErrorCode::P0000, // Or new code for invalid logical op
+                            format!("Invalid logical operator '{}'.", operator_token.lexeme),
+                            Some(op_loc),
+                        )),
                     }
                 } else {
-                    Err(Error::TypeError(
-                        "Left operand of logical operator must be a boolean".to_string(),
+                    Err(Error::type_error(
+                        ErrorCode::T0005,
+                        format!("Left operand of logical operator '{}' must be a boolean, found {}.", operator_token.lexeme, left_val.get_type()),
+                        Some(left_expr.loc.clone()),
                     ))
                 }
-            }
-            Expr::Call(name, args_exprs) => {
-                // Evaluate all arguments
-                let mut arg_values = Vec::with_capacity(args_exprs.len());
-                for arg_expr in args_exprs {
+            },
+            ExprKind::Call { name_token, arguments } => {
+                let callee_name = name_token.lexeme.clone();
+                let call_loc = SourceLocation::new(name_token.line, name_token.column);
+
+                let mut arg_values = Vec::with_capacity(arguments.len());
+                for arg_expr in arguments {
                     arg_values.push(self.evaluate_expression(arg_expr)?);
                 }
-                
-                // Handle built-in functions specifically
-                match name.as_str() {
-                    "println" => {
-                        // Format and print the values
-                        if arg_values.is_empty() {
-                            println!();
-                        } else {
-                            let mut formatted = Vec::with_capacity(arg_values.len());
-                            for value in &arg_values {
-                                formatted.push(value.to_string_value()?);
-                            }
-                            let output = formatted.join(" ");
-                            println!("{}", output.green());
-                        }
-                        return Ok(Value::Null);
-                    }
+
+                // 1. Check always-available built-ins first (excluding those that will be std-namespaced)
+                match callee_name.as_str() {
                     "inputln" => {
-                        if !arg_values.is_empty() {
-                            return Err(Error::RuntimeError(
-                                "inputln() expects 0 arguments".to_string(),
+                        if !arg_values.is_empty() { 
+                            return Err(Error::runtime(
+                                ErrorCode::R0005, 
+                                format!("Built-in function 'inputln()' expects 0 arguments, got {}.", arg_values.len()),
+                                Some(call_loc), 
                             ));
                         }
-                        // Optionally print a prompt if we decide to support it
-                        // For now, let's keep it simple
-                        // print!(""); // Ensure any previous output is flushed
-                        // io::stdout().flush().map_err(|e| Error::IoError(e.to_string()))?;
-                        
-                        let mut buffer = String::new();
-                        io::stdin().read_line(&mut buffer)
-                            .map_err(|e| Error::RuntimeError(format!("Failed to read line: {}", e)))?;
-                        
-                        // Trim newline characters from the end
-                        let input = buffer.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
-                        return Ok(Value::String(input));
+                        print!("> "); 
+                        io::stdout().flush().map_err(|e| Error::io(
+                            ErrorCode::I0002, 
+                            format!("Failed to flush stdout: {}", e), 
+                            Some(call_loc.clone()))
+                        )?;
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input).map_err(|e| Error::io(
+                            ErrorCode::I0003,
+                            format!("Failed to read line: {}", e),
+                            Some(call_loc.clone()))
+                        )?;
+                        return Ok(Value::String(input.trim_end().to_string()));
                     }
-                    "to_int" => {
+                    "toInt" => {
                         if arg_values.len() != 1 {
-                            return Err(Error::RuntimeError(
-                                "to_int() expects 1 argument".to_string(),
+                            return Err(Error::runtime(
+                                ErrorCode::R0005,
+                                format!("Built-in function 'toInt()' expects 1 argument, got {}.", arg_values.len()),
+                                Some(call_loc),
                             ));
                         }
                         match &arg_values[0] {
                             Value::String(s) => {
-                                match s.parse::<i64>() {
-                                    Ok(num) => return Ok(Value::Int(num)),
-                                    Err(_) => {
-                                        return Err(Error::RuntimeError(format!(
-                                            "Cannot convert string '{}' to int", s
-                                        )));
-                                    }
-                                }
-                            }
-                            _ => {
-                                return Err(Error::TypeError(format!(
-                                    "to_int() expects a string argument, got {}", arg_values[0].get_type()
-                                )));
-                            }
-                        }
-                    }
-                    _ => { // User-defined functions
-                        let function = match self.functions.get(name) {
-                            Some(func) => func.clone(),
-                            None => return Err(Error::UndefinedError(format!("Function '{}' is not defined", name))),
-                        };
-                        
-                        // Check that the argument count matches
-                        if arg_values.len() != function.parameters.len() {
-                            return Err(Error::RuntimeError(format!(
-                                "Expected {} arguments but got {}",
-                                function.parameters.len(),
-                                arg_values.len()
-                            )));
-                        }
-                        
-                        // Create a new environment for the function call
-                        let old_environment = self.environment.clone();
-                        
-                        // Bind arguments to parameters
-                        for (param, value) in function.parameters.iter().zip(arg_values.iter()) {
-                            // Check that the argument type matches the parameter type
-                            let value_type = value.get_type();
-                            if !param.param_type.is_compatible_with(&value_type) {
-                                // Restore the old environment
-                                self.environment = old_environment;
-                                
-                                return Err(Error::TypeError(format!(
-                                    "Cannot pass argument of type {} to parameter of type {}",
-                                    value_type, param.param_type
-                                )));
-                            }
-                            
-                            // Add the parameter to the environment
-                            self.environment.insert(
-                                param.name.clone(),
-                                Variable {
-                                    var_type: param.param_type.clone(),
-                                    value: value.clone(),
-                                    is_mutable: false, // Parameters are immutable
-                                },
-                            );
-                        }
-                        
-                        // Execute the function body
-                        let result = match self.execute_statement(&function.body) {
-                            Ok(value) => value,
-                            Err(Error::RuntimeError(msg)) if msg.starts_with("return: ") => {
-                                // Extract the return value
-                                let value_str = msg.trim_start_matches("return: ");
-                                
-                                // Parse the value
-                                if value_str == "null" {
-                                    Value::Null
-                                } else if let Ok(value) = value_str.parse::<i64>() {
-                                    Value::Int(value)
-                                } else if value_str == "true" {
-                                    Value::Bool(true)
-                                } else if value_str == "false" {
-                                    Value::Bool(false)
-                                } else {
-                                    // Assume it's a string
-                                    Value::String(value_str.to_string())
-                                }
+                                return s.parse::<i64>().map(Value::Int).or_else(|_| 
+                                    s.parse::<f64>().map(|f_val| Value::Int(f_val as i64))
+                                ).map_err(|_e| Error::runtime(
+                                    ErrorCode::R0000, 
+                                    format!("Cannot convert string '{}' to int.", s),
+                                    Some(arguments[0].loc.clone()),
+                                ));
                             },
-                            Err(err) => {
-                                // Restore the old environment
-                                self.environment = old_environment;
-                                
-                                return Err(err);
-                            }
-                        };
-                        
-                        // Restore the old environment
-                        self.environment = old_environment;
-                        
-                        // Check that the return type matches if one is specified
-                        if let Some(return_type) = &function.return_type {
-                            let result_type = result.get_type();
-                            if !return_type.is_compatible_with(&result_type) && result != Value::Null {
-                                return Err(Error::TypeError(format!(
-                                    "Function '{}' expected return type {} but got {}",
-                                    function.name, return_type, result_type
-                                )));
-                            }
+                            Value::Int(i) => return Ok(Value::Int(*i)),
+                            Value::Float(f) => return Ok(Value::Int(*f as i64)), 
+                            Value::Bool(b) => return Ok(Value::Int(if *b { 1 } else { 0 })), 
+                            Value::Null => return Ok(Value::Int(0)), 
+                            Value::StdFunctionLink(name) => return Err(Error::type_error(
+                                ErrorCode::T0007,
+                                format!("Built-in function 'toInt()' cannot convert type Value::StdFunctionLink ({}) to int.", name),
+                                Some(arguments[0].loc.clone()),
+                            )),
+                            other => return Err(Error::type_error(
+                                ErrorCode::T0007,
+                                format!("Built-in function 'toInt()' cannot convert type {} to int.", other.get_type()),
+                                Some(arguments[0].loc.clone()),
+                            )),
                         }
-                        
-                        Ok(result)
                     }
-                }
-            },
-            Expr::Variable(name) => {
-                // Look up the variable in the environment
-                match self.environment.get(name) {
-                    Some(variable) => Ok(variable.value.clone()),
-                    None => Err(Error::UndefinedError(format!("Variable '{}' is not defined", name))),
-                }
-            },
-            Expr::Assign(name, value_expr) => {
-                // Evaluate the right-hand side
-                let value = self.evaluate_expression(value_expr)?;
-                
-                // Check if the variable exists
-                match self.environment.get(name) {
-                    Some(variable) => {
-                        // Check if the variable is mutable
-                        if !variable.is_mutable {
-                            return Err(Error::RuntimeError(
-                                format!("Cannot assign to immutable variable '{}'", name)
+                    "toBool" => {
+                        if arg_values.len() != 1 {
+                            return Err(Error::runtime(
+                                ErrorCode::R0005,
+                                format!("Built-in function 'toBool()' expects 1 argument, got {}.", arg_values.len()),
+                                Some(call_loc),
                             ));
                         }
-                        
-                        // Check if the value type is compatible with the variable type
-                        let value_type = value.get_type();
-                        if !variable.var_type.is_compatible_with(&value_type) {
-                            return Err(Error::TypeError(format!(
-                                "Cannot assign value of type {} to variable of type {}",
-                                value_type, variable.var_type
-                            )));
-                        }
-                        
-                        // Update the variable
-                        self.environment.insert(
-                            name.clone(),
-                            Variable {
-                                var_type: variable.var_type.clone(),
-                                value: value.clone(),
-                                is_mutable: true,
+                        match &arg_values[0] {
+                            Value::Bool(b) => return Ok(Value::Bool(*b)), 
+                            Value::Int(i) => return Ok(Value::Bool(*i != 0)), 
+                            Value::Float(f) => return Ok(Value::Bool(*f != 0.0)), 
+                            Value::String(s) => {
+                                let s_lower = s.to_lowercase();
+                                if s.is_empty() || s_lower == "false" {
+                                    return Ok(Value::Bool(false));
+                                } else {
+                                    return Ok(Value::Bool(true));
+                                }
                             },
-                        );
-                        
-                        Ok(value)
-                    },
-                    None => Err(Error::UndefinedError(format!("Variable '{}' is not defined", name))),
-                }
-            },
-            Expr::Increment(name) => {
-                // Get the current value of the variable
-                let variable = match self.environment.get(name) {
-                    Some(v) => v.clone(),
-                    None => return Err(Error::UndefinedError(format!("Variable '{}' is not defined", name))),
-                };
-                
-                // Ensure the variable is mutable
-                if !variable.is_mutable {
-                    return Err(Error::RuntimeError(
-                        format!("Cannot increment immutable variable '{}'", name)
-                    ));
-                }
-                
-                // Ensure the variable is an integer
-                if let Value::Int(value) = variable.value {
-                    // Increment the value
-                    let new_value = Value::Int(value + 1);
-                    
-                    // Update the variable
-                    self.environment.insert(
-                        name.clone(),
-                        Variable {
-                            var_type: variable.var_type,
-                            value: new_value.clone(),
-                            is_mutable: true,
-                        },
-                    );
-                    
-                    Ok(new_value)
-                } else {
-                    Err(Error::TypeError(
-                        format!("Cannot increment variable of type {}", variable.var_type)
-                    ))
-                }
-            },
-            Expr::Decrement(name) => {
-                // Get the current value of the variable
-                let variable = match self.environment.get(name) {
-                    Some(v) => v.clone(),
-                    None => return Err(Error::UndefinedError(format!("Variable '{}' is not defined", name))),
-                };
-                
-                // Ensure the variable is mutable
-                if !variable.is_mutable {
-                    return Err(Error::RuntimeError(
-                        format!("Cannot decrement immutable variable '{}'", name)
-                    ));
-                }
-                
-                // Ensure the variable is an integer
-                if let Value::Int(value) = variable.value {
-                    // Decrement the value
-                    let new_value = Value::Int(value - 1);
-                    
-                    // Update the variable
-                    self.environment.insert(
-                        name.clone(),
-                        Variable {
-                            var_type: variable.var_type,
-                            value: new_value.clone(),
-                            is_mutable: true,
-                        },
-                    );
-                    
-                    Ok(new_value)
-                } else {
-                    Err(Error::TypeError(
-                        format!("Cannot decrement variable of type {}", variable.var_type)
-                    ))
-                }
-            },
-            Expr::ListLiteral(exprs) => {
-                let mut elements = Vec::new();
-                let mut inferred_element_type: Option<Type> = None;
-
-                for expr_element in exprs {
-                    let value = self.evaluate_expression(expr_element)?;
-                    
-                    if inferred_element_type.is_none() {
-                        // First element (if not Null) determines the type
-                        if value.get_type() != Type::Unknown { // Type::Unknown is Value::Null.get_type()
-                            inferred_element_type = Some(value.get_type());
+                            Value::Null => return Ok(Value::Bool(false)), 
+                            Value::List(list_ref) => {
+                                let elements: Ref<'_, Vec<Value>> = (*list_ref.elements).borrow();
+                                return Ok(Value::Bool(!elements.is_empty()));
+                            },
+                            Value::Object(obj_ref) => {
+                                let properties: Ref<'_, HashMap<String, Value>> = (*obj_ref.properties).borrow();
+                                return Ok(Value::Bool(!properties.is_empty()));
+                            },
+                            Value::StdFunctionLink(_) => return Ok(Value::Bool(true)),
                         }
+                    }
+                    "toString" => {
+                        if arg_values.len() != 1 {
+                            return Err(Error::runtime(
+                                ErrorCode::R0005,
+                                format!("Built-in function 'toString()' expects 1 argument, got {}.", arg_values.len()),
+                                Some(call_loc),
+                            ));
+                        }
+                        let value = &arg_values[0];
+                        match value.to_string_value() {
+                            Ok(s) => return Ok(Value::String(s)),
+                            Err(e) => return Err(Error::runtime(
+                                ErrorCode::R0000, 
+                                format!("Cannot convert value to string: {}", e),
+                                Some(arguments[0].loc.clone()),
+                            )),
+                        }
+                    }
+                    "toFloat" => {
+                        if arg_values.len() != 1 {
+                            return Err(Error::runtime(
+                                ErrorCode::R0005,
+                                format!("Built-in function 'toFloat()' expects 1 argument, got {}.", arg_values.len()),
+                                Some(call_loc),
+                            ));
+                        }
+                        match &arg_values[0] {
+                            Value::Float(f) => return Ok(Value::Float(*f)),
+                            Value::Int(i) => return Ok(Value::Float(*i as f64)),
+                            Value::String(s) => {
+                                return s.parse::<f64>().map(Value::Float).map_err(|_e| Error::runtime(
+                                    ErrorCode::R0000, 
+                                    format!("Cannot convert string '{}' to float.", s),
+                                    Some(arguments[0].loc.clone()),
+                                ));
+                            },
+                            Value::Bool(b) => return Ok(Value::Float(if *b { 1.0 } else { 0.0 })), 
+                            Value::Null => return Ok(Value::Float(0.0)), 
+                            Value::StdFunctionLink(name) => return Err(Error::type_error(
+                                ErrorCode::T0007,
+                                format!("Built-in function 'toFloat()' cannot convert type Value::StdFunctionLink ({}) to float.", name),
+                                Some(arguments[0].loc.clone()),
+                            )),
+                            other => return Err(Error::type_error(
+                                ErrorCode::T0007,
+                                format!("Built-in function 'toFloat()' cannot convert type {} to float.", other.get_type()),
+                                Some(arguments[0].loc.clone()),
+                            )),
+                        }
+                    }
+                    _ => { /* Not an always-available built-in, proceed to next checks */ }
+                }
+
+                // 2. Check user-defined functions
+                if let Some(function_data) = self.functions.get(&callee_name) {
+                    let func_params = function_data.parameters.clone();
+                    let func_return_type = function_data.return_type.clone();
+                    let func_body = function_data.body.clone();
+                    let func_name = function_data.name.clone();
+
+                    if func_params.len() != arg_values.len() {
+                        return Err(Error::runtime(
+                            ErrorCode::R0005,
+                            format!(
+                                "Function '{}' expected {} arguments but got {}.",
+                                func_name, func_params.len(), arg_values.len()
+                            ),
+                            Some(call_loc.clone()),
+                        ));
+                    }
+                    // Environment setup for the function call
+                    // Important: Create a truly new scope or manage environment stack
+                    // The current model: clone old, use new, restore old.
+                    // This is okay for now but consider a stack-based environment for proper lexical scoping.
+                    let old_env_for_function_call = self.environment.clone();
+                    let mut function_scope_env = self.environment.clone(); // Start with a copy of the current environment for closures
+
+                    for (i, (param, value)) in func_params.iter().zip(arg_values.iter()).enumerate() {
+                        let value_type = value.get_type();
+                        if !param.param_type.is_compatible_with(&value_type) {
+                            self.environment = old_env_for_function_call; // Restore env before erroring
+                            return Err(Error::type_error(
+                                ErrorCode::T0007, // Argument type mismatch
+                                format!(
+                                    "Cannot pass argument {} ('{:?}') of type {} to parameter '{}' (expected type {}) in call to '{}'.",
+                                    i + 1, arguments[i].kind, value_type, param.name_token.lexeme, param.param_type, func_name
+                                ),
+                                Some(arguments[i].loc.clone()),
+                            ));
+                        }
+                        // Add parameter to the function's new scope
+                        function_scope_env.insert(param.name_token.lexeme.clone(), Variable {
+                            var_type: param.param_type.clone(),
+                            value: value.clone(),
+                            is_mutable: false, // Parameters are immutable by default
+                        });
+                    }
+                    
+                    self.environment = function_scope_env; // Activate the function's environment
+
+                    let actual_return_value = match self.execute_statement(&func_body) { 
+                        Ok(_) => Value::Null, // Fell off the end of the function body, implicit null return
+                        Err(Error::ReturnControlFlow(val)) => *val, // Explicit return statement
+                        Err(e) => { 
+                            self.environment = old_env_for_function_call; // Restore environment on other errors
+                            return Err(e);
+                        }
+                    };
+                    
+                    self.environment = old_env_for_function_call; // Restore the previous environment after function execution
+
+                    // Perform return type checking using the (now non-optional) func_return_type
+                    let expected_return_type = &func_return_type;
+                    let actual_result_type = actual_return_value.get_type();
+
+                    if !expected_return_type.is_compatible_with(&actual_result_type) {
+                        // Specific error for implicit null return when a non-nullable type is expected.
+                        if actual_return_value == Value::Null &&
+                           (*expected_return_type == Type::Int ||
+                            *expected_return_type == Type::Float ||
+                            *expected_return_type == Type::Bool) {
+                            // String allows implicit null to become "null" via to_string_value,
+                            // Object allows null. This is for types that strictly cannot be null implicitly.
+                            return Err(Error::type_error(
+                                ErrorCode::T0006, // Function returned value of incompatible type
+                                format!(
+                                    "Function '{}' is declared to return type {} but implicitly returned null (by falling off the end of the function). A function that returns {} must explicitly return a value.",
+                                    func_name, expected_return_type, expected_return_type
+                                ),
+                                Some(call_loc.clone()) 
+                            ));
+                        }
+                        // General incompatibility
+                        return Err(Error::type_error(
+                            ErrorCode::T0006, // Function returned value of incompatible type
+                            format!(
+                                "Function '{}' expected to return type {} but execution returned type {}.",
+                                func_name, expected_return_type, actual_result_type
+                            ),
+                            Some(call_loc.clone()) 
+                        ));
+                    }
+                    return Ok(actual_return_value);
+                }
+
+                // 3. Check imported standard library symbols (direct calls like sqrt() after individual import)
+                if let Some(canonical_name) = self.imported_std_symbols.get(&callee_name) {
+                    match canonical_name.as_str() {
+                        "std::math::sqrt" => {
+                            if arg_values.len() != 1 {
+                                return Err(Error::runtime(
+                                    ErrorCode::R0005,
+                                    format!("std::math::sqrt() expects 1 argument, got {}.", arg_values.len()),
+                                    Some(call_loc),
+                                ));
+                            }
+                            match &arg_values[0] {
+                                Value::Int(i) => {
+                                    if *i < 0 {
+                                        return Err(Error::runtime(
+                                            ErrorCode::R0000, 
+                                            format!("Cannot take sqrt of negative number: {}.", i),
+                                            Some(arguments[0].loc.clone()),
+                                        ));
+                                    }
+                                    return Ok(Value::Float((*i as f64).sqrt()));
+                                },
+                                Value::Float(f) => {
+                                    if *f < 0.0 {
+                                        return Err(Error::runtime(
+                                            ErrorCode::R0000, 
+                                            format!("Cannot take sqrt of negative number: {}.", f),
+                                            Some(arguments[0].loc.clone()),
+                                        ));
+                                    }
+                                    return Ok(Value::Float(f.sqrt()));
+                                },
+                                other => return Err(Error::type_error(
+                                    ErrorCode::T0007,
+                                    format!("std::math::sqrt() expects a number argument, got {}.", other.get_type()),
+                                    Some(arguments[0].loc.clone()),
+                                )),
+                            }
+                        }
+                        "std::math::abs" => {
+                            if arg_values.len() != 1 {
+                                return Err(Error::runtime(ErrorCode::R0005, format!("std::math::abs() expects 1 argument, got {}.", arg_values.len()), Some(call_loc)));
+                            }
+                            match &arg_values[0] {
+                                Value::Int(i) => Ok(Value::Int(i.abs())),
+                                Value::Float(f) => Ok(Value::Float(f.abs())),
+                                other => Err(Error::type_error(ErrorCode::T0007, format!("std::math::abs() expects a number argument, got {}.", other.get_type()), Some(arguments[0].loc.clone()))),
+                            }
+                        }
+                        "std::math::pow" => {
+                            if arg_values.len() != 2 {
+                                return Err(Error::runtime(ErrorCode::R0005, format!("std::math::pow() expects 2 arguments, got {}.", arg_values.len()), Some(call_loc)));
+                            }
+                            let base = &arg_values[0];
+                            let exponent = &arg_values[1];
+                            match (base, exponent) {
+                                (Value::Float(b), Value::Float(e)) => Ok(Value::Float(b.powf(*e))),
+                                (Value::Float(b), Value::Int(e)) => Ok(Value::Float(b.powf(*e as f64))),
+                                (Value::Int(b), Value::Float(e)) => Ok(Value::Float((*b as f64).powf(*e))),
+                                (Value::Int(b), Value::Int(e)) => { if *e < 0 { Ok(Value::Float((*b as f64).powf(*e as f64))) } else { Ok(Value::Int(b.pow(*e as u32))) } },
+                                (b, e) => Err(Error::type_error(ErrorCode::T0003, format!("std::math::pow() expects two number arguments, found {} and {}.", b.get_type(), e.get_type()), Some(call_loc))),
+                            }
+                        }
+                        "std::math::floor" => {
+                            if arg_values.len() != 1 {
+                                return Err(Error::runtime(ErrorCode::R0005, format!("std::math::floor() expects 1 argument, got {}.", arg_values.len()), Some(call_loc)));
+                            }
+                            match &arg_values[0] {
+                                Value::Float(f) => Ok(Value::Float(f.floor())),
+                                Value::Int(i) => Ok(Value::Int(*i)),
+                                other => Err(Error::type_error(ErrorCode::T0007, format!("std::math::floor() expects a number argument, got {}.", other.get_type()), Some(arguments[0].loc.clone()))),
+                            }
+                        }
+                        _ => {
+                            return Err(Error::runtime(
+                                ErrorCode::R0000, // Or a more specific internal error
+                                format!("Internal error: Imported standard symbol '{}' (aliased as '{}') has no implementation.", canonical_name, callee_name),
+                                Some(call_loc),
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(Error::runtime(ErrorCode::R0004, format!("Function '{}' is not defined.", callee_name), Some(call_loc)));
+                }
+            },
+            ExprKind::Increment(token) => {
+                let _op_loc = expr_node.loc.clone(); // Marked as unused
+                let name_token = token; 
+
+                let var_name = &name_token.lexeme;
+                if let Some(var_data) = self.environment.get_mut(var_name) {
+                    if !var_data.is_mutable {
+                        return Err(Error::type_error(
+                            ErrorCode::T0004, 
+                            format!("Cannot increment non-mutable variable '{}'.", var_name),
+                            Some(SourceLocation::new(name_token.line, name_token.column)),
+                        ));
+                    }
+                    if let Value::Int(val) = var_data.value {
+                        var_data.value = Value::Int(val + 1);
+                        Ok(Value::Int(val + 1))
                     } else {
-                        // Subsequent elements must match, Null is compatible with any typed list for now
-                        if value.get_type() != Type::Unknown && inferred_element_type.as_ref().unwrap() != &value.get_type() {
-                            return Err(Error::TypeError(format!(
-                                "List literals must contain elements of the same type. Expected {} but found {}.",
-                                inferred_element_type.as_ref().unwrap(), value.get_type()
-                            )));
-                        }
+                        Err(Error::type_error(
+                            ErrorCode::R0006, // Invalid inc/dec target type
+                            format!("Cannot increment variable '{}' of type {}. Expected integer.", var_name, var_data.value.get_type()),
+                            Some(SourceLocation::new(name_token.line, name_token.column)),
+                        ))
                     }
-                    elements.push(value);
-                }
-
-                let final_element_type = inferred_element_type.unwrap_or(Type::Unknown); // If list is empty or only Nulls, type is Unknown
-                Ok(Value::List(ListRef::from_vec(elements, final_element_type)))
-            },
-            Expr::MethodCall(object_expr, method_token, arg_exprs) => {
-                let object_value = self.evaluate_expression(object_expr)?;
-                let method_name = &method_token.lexeme;
-
-                match object_value {
-                    Value::List(list_ref) => { // list_ref is ListRef, not &ListRef here
-                        let mut args = Vec::with_capacity(arg_exprs.len());
-                        for arg_expr in arg_exprs {
-                            args.push(self.evaluate_expression(arg_expr)?);
-                        }
-
-                        match method_name.as_str() {
-                            "push" => self.list_push(list_ref, args, method_token),
-                            "pop"  => self.list_pop(list_ref, args, method_token),
-                            "len"  => self.list_len(list_ref, args, method_token),
-                            "get"  => self.list_get(list_ref, args, method_token),
-                            "set"  => self.list_set(list_ref, args, method_token),
-                            _ => Err(Error::RuntimeError(format!(
-                                "List has no method named '{}' at line {}.",
-                                method_name, method_token.line
-                            ))),
-                        }
-                    }
-                    _ => Err(Error::TypeError(format!(
-                        "Can only call methods on lists. Found type {} at line {}.",
-                        object_value.get_type(), method_token.line
-                    ))),
+                } else {
+                    Err(Error::runtime(
+                        ErrorCode::R0001,
+                        format!("Undefined variable '{}' for increment.", var_name),
+                        Some(SourceLocation::new(name_token.line, name_token.column)),
+                    ))
                 }
             },
-            Expr::ObjectLiteral { properties } => {
-                let obj_ref = ObjectRef::new();
-                for (key_token, value_expr) in properties {
+            ExprKind::Decrement(token) => {
+                let _op_loc = expr_node.loc.clone(); // Marked as unused
+                let name_token = token;
+
+                let var_name = &name_token.lexeme;
+                if let Some(var_data) = self.environment.get_mut(var_name) {
+                    if !var_data.is_mutable {
+                        return Err(Error::type_error(
+                            ErrorCode::T0004, 
+                            format!("Cannot decrement non-mutable variable '{}'.", var_name),
+                            Some(SourceLocation::new(name_token.line, name_token.column)),
+                        ));
+                    }
+                    if let Value::Int(val) = var_data.value {
+                        var_data.value = Value::Int(val - 1);
+                        Ok(Value::Int(val - 1))
+                    } else {
+                        Err(Error::type_error(
+                            ErrorCode::R0006, // Invalid inc/dec target type
+                            format!("Cannot decrement variable '{}' of type {}. Expected integer.", var_name, var_data.value.get_type()),
+                            Some(SourceLocation::new(name_token.line, name_token.column)),
+                        ))
+                    }
+                } else {
+                    Err(Error::runtime(
+                        ErrorCode::R0001,
+                        format!("Undefined variable '{}' for decrement.", var_name),
+                        Some(SourceLocation::new(name_token.line, name_token.column)),
+                    ))
+                }
+            },
+            ExprKind::ListLiteral(elements) => {
+                let mut list_elements = Vec::new();
+                let mut inferred_element_type: Option<Type> = None;
+                let _expr_loc = expr_node.loc.clone(); // Marked as unused
+
+                for (i, elem_expr) in elements.iter().enumerate() {
+                    let value = self.evaluate_expression(elem_expr)?;
+                    let current_element_type = value.get_type();
+
+                    if i == 0 && value != Value::Null {
+                        inferred_element_type = Some(current_element_type.clone());
+                    } else if let Some(ref expected_type) = inferred_element_type {
+                        if !expected_type.is_compatible_with(&current_element_type) && value != Value::Null {
+                            return Err(Error::type_error(
+                                ErrorCode::T0001, 
+                                format!(
+                                    "List elements must be of the same type. Inferred type {} but element {} has type {}.",
+                                    expected_type, i, current_element_type
+                                ),
+                                Some(elem_expr.loc.clone()),
+                            ));
+                        }
+                    } else if inferred_element_type.is_none() && value != Value::Null {
+                            inferred_element_type = Some(current_element_type.clone());
+                    }
+                    
+                    list_elements.push(value);
+                }
+                
+                let final_element_type = inferred_element_type.unwrap_or(Type::Unknown);
+                
+                Ok(Value::List(ListRef::from_vec(list_elements, final_element_type)))
+            },
+            ExprKind::ObjectLiteral { properties } => {
+                let mut object_map_for_ref = HashMap::new();
+                for (name_token, value_expr) in properties {
                     let value = self.evaluate_expression(value_expr)?;
-                    obj_ref.properties.borrow_mut().insert(key_token.lexeme.clone(), value);
+                    object_map_for_ref.insert(name_token.lexeme.clone(), value);
                 }
+                let obj_ref = ObjectRef::new();
+                {
+                    // Scope for props_map to ensure it's dropped before obj_ref is moved
+                    let mut props_map: RefMut<'_, HashMap<String, Value>> = (*obj_ref.properties).borrow_mut();
+                    props_map.clear();
+                    props_map.extend(object_map_for_ref);
+                }
+                // props_map is dropped here
                 Ok(Value::Object(obj_ref))
             },
-            Expr::Get { object, name } => {
+            ExprKind::Get { object, name } => { 
                 let object_val = self.evaluate_expression(object)?;
+                let prop_name = &name.lexeme;
+                let get_loc = SourceLocation::new(name.line, name.column);
+
                 match object_val {
                     Value::Object(obj_ref) => {
-                        let prop_name = &name.lexeme;
-                        match obj_ref.properties.borrow().get(prop_name) {
-                            Some(value) => Ok(value.clone()),
-                            None => Ok(Value::Null), // Properties not found return null
+                        let map: Ref<'_, HashMap<String, Value>> = (*obj_ref.properties).borrow();
+                        if let Some(value) = map.get(prop_name) {
+                            Ok(value.clone())
+                        } else {
+                            Err(Error::runtime(
+                                ErrorCode::R0003, 
+                                format!("Property '{}' not found on object.", prop_name),
+                                Some(get_loc),
+                            ))
                         }
                     }
-                    _ => Err(Error::TypeError(format!(
-                        "Can only access properties on objects. Found type {} at line {}.",
-                        object_val.get_type(), name.line
-                    ))),
+                    Value::List(list_ref) => { 
+                        if prop_name == "len" {
+                            let elements: Ref<'_, Vec<Value>> = (*list_ref.elements).borrow();
+                            Ok(Value::Int(elements.len() as i64))
+                        } else {
+                            Err(Error::type_error(
+                                ErrorCode::T0008, 
+                                format!("Type List has no property '{}'. Did you mean method .len()?", prop_name),
+                                Some(get_loc),
+                            ))
+                        }
+                    }
+                    other => Err(Error::type_error(
+                        ErrorCode::T0008, 
+                        format!("Cannot access property '{}' on type {}. Expected object or list.", prop_name, other.get_type()),
+                        Some(object.loc.clone()), 
+                    )),
                 }
             },
-            Expr::Set { object, name, value } => {
+            ExprKind::Set { object, name, value } => { 
                 let object_val = self.evaluate_expression(object)?;
+                let new_prop_value = self.evaluate_expression(value)?;
+                let prop_name = &name.lexeme;
+                let _set_loc = SourceLocation::new(name.line, name.column); // Reverted to original, can be used for errors if needed
+
                 match object_val {
                     Value::Object(obj_ref) => {
-                        let prop_name = name.lexeme.clone();
-                        let val_to_set = self.evaluate_expression(value)?;
-                        obj_ref.properties.borrow_mut().insert(prop_name, val_to_set.clone());
-                        Ok(val_to_set)
+                        let mut props: RefMut<'_, HashMap<String, Value>> = (*obj_ref.properties).borrow_mut();
+                        props.insert(prop_name.clone(), new_prop_value.clone());
+                        Ok(new_prop_value)
                     }
-                    _ => Err(Error::TypeError(format!(
-                        "Can only set properties on objects. Found type {} at line {}.",
-                        object_val.get_type(), name.line
-                    ))),
+                    other => Err(Error::type_error(
+                        ErrorCode::T0009, 
+                        format!("Cannot set property '{}' on type {}. Expected object.", prop_name, other.get_type()),
+                        Some(object.loc.clone()),
+                    )),
                 }
             },
-        }
-    }
+            ExprKind::MethodCall { object, method_name_token, arguments } => {
+                let object_value = self.evaluate_expression(object)?;
+                let method_name = &method_name_token.lexeme;
+                let call_loc = SourceLocation::new(method_name_token.line, method_name_token.column);
 
-    // List method implementations
-    fn list_push(&mut self, list_ref: ListRef, args: Vec<Value>, token: &crate::token::Token) -> Result<Value, Error> {
-        if args.len() != 1 {
-            return Err(Error::RuntimeError(format!(
-                "Method 'push' expects 1 argument, got {} at line {}.",
-                args.len(), token.line
-            )));
-        }
-        let element_to_push = &args[0];
-        
-        let mut elements_borrow = list_ref.elements.borrow_mut();
-        let mut list_element_type_borrow = list_ref.element_type.borrow_mut();
+                let mut arg_values = Vec::with_capacity(arguments.len());
+                let mut arg_locs = Vec::with_capacity(arguments.len());
+                for arg_expr in arguments {
+                    arg_locs.push(arg_expr.loc.clone());
+                    arg_values.push(self.evaluate_expression(arg_expr)?);
+                }
 
-        if *list_element_type_borrow == Type::Unknown {
-            // If list type is Unknown (e.g. from `[]`), specialize it with the type of the first non-Null pushed element.
-            if element_to_push.get_type() != Type::Unknown { // Type::Unknown is Value::Null.get_type()
-                *list_element_type_borrow = element_to_push.get_type();
-            }
-        }
-
-        // Type check against the (potentially specialized) list element type.
-        // Allow pushing Value::Null (which has Type::Unknown) to any list.
-        if *list_element_type_borrow != Type::Unknown && 
-           element_to_push.get_type() != Type::Unknown &&
-           !list_element_type_borrow.is_compatible_with(&element_to_push.get_type()) {
-            return Err(Error::TypeError(format!(
-                "Cannot push value of type {} to list of type list<{}> at line {}.",
-                element_to_push.get_type(), *list_element_type_borrow, token.line
-            )));
-        }
-
-        elements_borrow.push(element_to_push.clone());
-        Ok(Value::Null)
-    }
-
-    fn list_pop(&mut self, list_ref: ListRef, args: Vec<Value>, token: &crate::token::Token) -> Result<Value, Error> {
-        if !args.is_empty() {
-            return Err(Error::RuntimeError(format!(
-                "Method 'pop' expects 0 arguments, got {} at line {}.",
-                args.len(), token.line
-            )));
-        }
-        match list_ref.elements.borrow_mut().pop() {
-            Some(value) => Ok(value),
-            None => Err(Error::RuntimeError(format!("Cannot pop from an empty list at line {}.", token.line))),
-        }
-    }
-
-    fn list_len(&mut self, list_ref: ListRef, args: Vec<Value>, token: &crate::token::Token) -> Result<Value, Error> {
-        if !args.is_empty() {
-            return Err(Error::RuntimeError(format!(
-                "Method 'len' expects 0 arguments, got {} at line {}.",
-                args.len(), token.line
-            )));
-        }
-        let len = list_ref.elements.borrow().len();
-        Ok(Value::Int(len as i64))
-    }
-
-    fn list_get(&mut self, list_ref: ListRef, args: Vec<Value>, token: &crate::token::Token) -> Result<Value, Error> {
-        if args.len() != 1 {
-            return Err(Error::RuntimeError(format!(
-                "Method 'get' expects 1 argument (index), got {} at line {}.",
-                args.len(), token.line
-            )));
-        }
-        match &args[0] {
-            Value::Int(index) => {
-                let i = *index as usize;
-                let elements_borrow = list_ref.elements.borrow();
-                if i < elements_borrow.len() {
-                    Ok(elements_borrow[i].clone())
+                if let Value::Object(obj_ref) = &object_value {
+                    let props = obj_ref.properties.borrow();
+                    if let Some(Value::StdFunctionLink(canonical_name)) = props.get(method_name) {
+                        let canonical_name_clone = canonical_name.clone();
+                        match canonical_name_clone.as_str() {
+                            "std::math::sqrt" => {
+                                if arg_values.len() != 1 { return Err(Error::runtime(ErrorCode::R0005, format!("std::math::sqrt() expects 1 argument, got {}.", arg_values.len()), Some(call_loc))); }
+                                match &arg_values[0] {
+                                    Value::Int(i) => { if *i < 0 { return Err(Error::runtime(ErrorCode::R0000, format!("Cannot take sqrt of negative number: {}.", i), Some(arg_locs[0].clone()))); } Ok(Value::Float((*i as f64).sqrt())) },
+                                    Value::Float(f) => { if *f < 0.0 { return Err(Error::runtime(ErrorCode::R0000, format!("Cannot take sqrt of negative number: {}.", f), Some(arg_locs[0].clone()))); } Ok(Value::Float(f.sqrt())) },
+                                    other => Err(Error::type_error(ErrorCode::T0007, format!("std::math::sqrt() expects a number argument, got {}.", other.get_type()), Some(arg_locs[0].clone()))),
+                                }
+                            }
+                            "std::math::abs" => {
+                                if arg_values.len() != 1 { return Err(Error::runtime(ErrorCode::R0005, format!("std::math::abs() expects 1 argument, got {}.", arg_values.len()), Some(call_loc))); }
+                                match &arg_values[0] {
+                                    Value::Int(i) => Ok(Value::Int(i.abs())),
+                                    Value::Float(f) => Ok(Value::Float(f.abs())),
+                                    other => Err(Error::type_error(ErrorCode::T0007, format!("std::math::abs() expects a number argument, got {}.", other.get_type()), Some(arg_locs[0].clone()))),
+                                }
+                            }
+                            "std::math::pow" => {
+                                if arg_values.len() != 2 { return Err(Error::runtime(ErrorCode::R0005, format!("std::math::pow() expects 2 arguments, got {}.", arg_values.len()), Some(call_loc))); }
+                                let base_val = &arg_values[0]; let exp_val = &arg_values[1];
+                                match (base_val, exp_val) {
+                                    (Value::Float(b), Value::Float(e)) => Ok(Value::Float(b.powf(*e))),
+                                    (Value::Float(b), Value::Int(e)) => Ok(Value::Float(b.powf(*e as f64))),
+                                    (Value::Int(b), Value::Float(e)) => Ok(Value::Float((*b as f64).powf(*e))),
+                                    (Value::Int(b), Value::Int(e)) => { if *e < 0 { Ok(Value::Float((*b as f64).powf(*e as f64))) } else { Ok(Value::Int(b.pow(*e as u32))) } },
+                                    (b, e) => Err(Error::type_error(ErrorCode::T0003, format!("std::math::pow() expects two number arguments, found {} and {}.", b.get_type(), e.get_type()), Some(call_loc))),
+                                }
+                            }
+                            "std::math::floor" => {
+                                if arg_values.len() != 1 { return Err(Error::runtime(ErrorCode::R0005, format!("std::math::floor() expects 1 argument, got {}.", arg_values.len()), Some(call_loc))); }
+                                match &arg_values[0] {
+                                    Value::Float(f) => Ok(Value::Float(f.floor())),
+                                    Value::Int(i) => Ok(Value::Int(*i)),
+                                    other => Err(Error::type_error(ErrorCode::T0007, format!("std::math::floor() expects a number argument, got {}.", other.get_type()), Some(arg_locs[0].clone()))),
+                                }
+                            }
+                            _ => Err(Error::runtime(ErrorCode::R0000, format!("Internal error: StdFunctionLink '{}' has no implementation.", canonical_name_clone), Some(call_loc))),
+                        }
+                    } else {
+                        // Object, but the property was not a StdFunctionLink. This means it's not a known module method.
+                        // For generic objects, direct method calls like this aren't supported yet.
+                        return Err(Error::runtime(
+                            ErrorCode::R0008, // Method not found on object
+                            format!("Method '{}' not found on object.", method_name),
+                            Some(call_loc.clone()),
+                        ));
+                    }
                 } else {
-                    Err(Error::RuntimeError(format!(
-                        "List index {} out of bounds (length is {}) at line {}.",
-                        index, elements_borrow.len(), token.line
-                    )))
+                    // Not an object, try list method call (this part should be fine as object_value is moved)
+                    self.handle_list_method_call(object_value, method_name, arg_values, &call_loc, &arg_locs)
+                }
+            },
+            // The following catch-all pattern was previously triggering an unreachable_patterns warning.
+            // It's commented out because all ExprKind variants should now be explicitly handled above.
+            // If new ExprKind variants are added, they must be handled, or this can be re-enabled (with a specific error code).
+            // _ => Err(Error::runtime(ErrorCode::GEN001, "Unsupported expression kind encountered in interpreter.".to_string(), Some(expr_loc)))
+        }
+    }
+
+    // Helper function to avoid duplicating list method call logic
+    fn handle_list_method_call(&mut self, object_value: Value, method_name: &str, arg_values: Vec<Value>, call_loc: &SourceLocation, arg_locs: &[SourceLocation]) -> Result<Value, Error> {
+        match object_value {
+            Value::List(list_ref) => {
+                let dummy_token_for_list_method = Token {token_type: TokenType::Identifier, lexeme: method_name.to_string(), line: call_loc.line, column: call_loc.column, value: None};
+                let first_arg_loc = if arg_locs.is_empty() {call_loc} else {&arg_locs[0]};
+                let second_arg_loc = if arg_locs.len() > 1 {Some(&arg_locs[1])} else {None};
+
+                match method_name {
+                    "push" => self.list_push(list_ref, arg_values, &dummy_token_for_list_method, first_arg_loc),
+                    "pop" => self.list_pop(list_ref, arg_values, &dummy_token_for_list_method),
+                    "len" => self.list_len(list_ref, arg_values, &dummy_token_for_list_method),
+                    "get" => self.list_get(list_ref, arg_values, &dummy_token_for_list_method, first_arg_loc),
+                    "set" => self.list_set(list_ref, arg_values, &dummy_token_for_list_method, first_arg_loc, second_arg_loc),
+                    _ => Err(Error::runtime(ErrorCode::R0008, format!("List has no method named '{}'.", method_name), Some(call_loc.clone()))),
                 }
             }
-            _ => Err(Error::TypeError(format!(
-                "List index must be an integer, got {} at line {}.",
-                args[0].get_type(), token.line
-            ))),
+            _ => Err(Error::type_error(ErrorCode::T0010, format!("Cannot call method '{}' on type {}. Expected list or module object.", method_name, object_value.get_type()), Some(call_loc.clone()))),
         }
     }
 
-    fn list_set(&mut self, list_ref: ListRef, args: Vec<Value>, token: &crate::token::Token) -> Result<Value, Error> {
-        if args.len() != 2 {
-            return Err(Error::RuntimeError(format!(
-                "Method 'set' expects 2 arguments (index, value), got {} at line {}.",
-                args.len(), token.line
-            )));
+    // START: Added List Helper Methods
+    fn list_push(&mut self, list_ref: ListRef, arg_values: Vec<Value>, method_token: &Token, value_loc: &SourceLocation) -> Result<Value, Error> {
+        if arg_values.len() != 1 {
+            return Err(Error::runtime(
+                ErrorCode::R0005, 
+                format!("List method '{}' expects 1 argument (value to push), got {}.", method_token.lexeme, arg_values.len()),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
         }
-        
-        let new_element = &args[1];
-        let list_element_type_ro_borrow = list_ref.element_type.borrow();
+        let value_to_push = &arg_values[0];
+        let value_type = value_to_push.get_type();
+        let list_element_type_rc = list_ref.element_type.clone();
 
-        if *list_element_type_ro_borrow == Type::Unknown {
-            // Cannot 'set' into a list of fully unknown type unless the new element is also Null/Unknown.
-            // A list must generally acquire its type via declaration or a 'push' operation first.
-            // This also implies we cannot set an element that would define the type of an empty unknown list.
-            if new_element.get_type() != Type::Unknown {
-                return Err(Error::TypeError(format!(
-                    "Cannot 'set' a typed value into a list of unestablished element type (list<unknown>) at line {}. Push an element first or declare list type.",
-                    token.line
-                )));
-            }
-        } else if new_element.get_type() != Type::Unknown && // Allow setting Null in a typed list
-                  !list_element_type_ro_borrow.is_compatible_with(&new_element.get_type()) {
-            return Err(Error::TypeError(format!(
-                "Cannot set element of type {} in list of type list<{}> at line {}.",
-                new_element.get_type(), *list_element_type_ro_borrow, token.line
-            )));
-        }
-
-        match &args[0] {
-            Value::Int(index) => {
-                let i = *index as usize;
-                let mut elements_borrow = list_ref.elements.borrow_mut();
-                if i < elements_borrow.len() {
-                    // If list type was Unknown, and we are setting with a Null, it remains Unknown.
-                    // If list type becomes known through this set (e.g. list was unknown, empty, set at 0 with typed value)
-                    // this is not handled here. `push` is the primary way to define type for `[]`.
-                    // For `set`, we assume the type is already established or the element is Null.
-                    elements_borrow[i] = new_element.clone();
-                    Ok(Value::Null)
+        let type_compatible;
+        {
+            let current_list_type_view = list_element_type_rc.borrow(); // Immutable borrow
+            if *current_list_type_view == Type::Unknown && value_to_push != &Value::Null {
+                drop(current_list_type_view); // Explicitly drop immutable before mutable
+                let mut list_type_mut = list_element_type_rc.borrow_mut();
+                *list_type_mut = value_type.clone();
+                type_compatible = true; // Type updated, so it's compatible
+            } else {
+                // Check compatibility with the existing type (or if value is null)
+                if current_list_type_view.is_compatible_with(&value_type) || value_to_push == &Value::Null {
+                    type_compatible = true;
                 } else {
-                    Err(Error::RuntimeError(format!(
-                        "List index {} out of bounds for 'set' (length is {}) at line {}.",
-                        index, elements_borrow.len(), token.line
-                    )))
+                    type_compatible = false;
+                    // Error will be returned after borrow drops
                 }
             }
-            _ => Err(Error::TypeError(format!(
-                "List index for 'set' must be an integer, got {} at line {}.",
-                args[0].get_type(), token.line
-            ))),
+        } // Immutable borrow current_list_type_view drops here if not dropped earlier
+
+        if !type_compatible { // Check flag set within the block
+             // Re-borrow to get the type for the error message, safely.
+            let final_list_type = list_element_type_rc.borrow();
+            return Err(Error::type_error(
+                ErrorCode::T0001, 
+                format!(
+                    "Cannot push value of type {} to list of type {}.",
+                    value_type, *final_list_type
+                ),
+                Some(value_loc.clone()),
+            ));
+        }
+
+        let mut elements = list_ref.elements.borrow_mut();
+        elements.push(value_to_push.clone());
+        Ok(Value::Null) 
+    }
+
+    fn list_len(&mut self, list_ref: ListRef, arg_values: Vec<Value>, method_token: &Token) -> Result<Value, Error> {
+        if !arg_values.is_empty() {
+            return Err(Error::runtime(
+                ErrorCode::R0005, 
+                format!("List method '{}' expects 0 arguments, got {}.", method_token.lexeme, arg_values.len()),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
+        }
+        let elements = list_ref.elements.borrow();
+        Ok(Value::Int(elements.len() as i64))
+    }
+
+    fn list_pop(&mut self, list_ref: ListRef, arg_values: Vec<Value>, method_token: &Token) -> Result<Value, Error> {
+        if !arg_values.is_empty() {
+            return Err(Error::runtime(
+                ErrorCode::R0005,
+                format!("List method '{}' expects 0 arguments, got {}.", method_token.lexeme, arg_values.len()),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
+        }
+        let mut elements = list_ref.elements.borrow_mut();
+        if elements.is_empty() {
+            return Err(Error::runtime(
+                ErrorCode::R0000, // Consider a specific error code for "pop from empty list"
+                format!("Cannot pop from an empty list."),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
+        }
+        Ok(elements.pop().unwrap_or(Value::Null)) // .pop() returns Option, unwrap_or for safety, though check above should prevent None
+    }
+
+    fn list_get(&mut self, list_ref: ListRef, arg_values: Vec<Value>, method_token: &Token, index_expr_loc: &SourceLocation) -> Result<Value, Error> {
+        if arg_values.len() != 1 {
+            return Err(Error::runtime(
+                ErrorCode::R0005,
+                format!("List method '{}' expects 1 argument (index), got {}.", method_token.lexeme, arg_values.len()),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
+        }
+        let index_val = &arg_values[0];
+        if let Value::Int(idx) = index_val {
+            let elements = list_ref.elements.borrow();
+            if *idx < 0 || *idx as usize >= elements.len() {
+                return Err(Error::runtime(
+                    ErrorCode::R0000, // Index out of bounds
+                    format!("List index {} out of bounds for list of length {}.", idx, elements.len()),
+                    Some(index_expr_loc.clone()),
+                ));
+            }
+            Ok(elements[*idx as usize].clone())
+        } else {
+            Err(Error::type_error(
+                ErrorCode::T0007,
+                format!("List index must be an integer, got {}.", index_val.get_type()),
+                Some(index_expr_loc.clone()),
+            ))
         }
     }
+
+    fn list_set(&mut self, list_ref: ListRef, arg_values: Vec<Value>, method_token: &Token, index_expr_loc: &SourceLocation, value_expr_loc: Option<&SourceLocation>) -> Result<Value, Error> {
+        if arg_values.len() != 2 {
+            return Err(Error::runtime(
+                ErrorCode::R0005,
+                format!("List method '{}' expects 2 arguments (index, value), got {}.", method_token.lexeme, arg_values.len()),
+                Some(SourceLocation::new(method_token.line, method_token.column)),
+            ));
+        }
+        let index_val = &arg_values[0];
+        let value_to_set = &arg_values[1];
+        let final_value_loc = value_expr_loc.unwrap_or(index_expr_loc); // Use index loc if value loc not specifically available
+
+        if let Value::Int(idx) = index_val {
+            let value_type = value_to_set.get_type();
+            let list_element_type_rc = list_ref.element_type.clone();
+            
+            {
+                let mut list_element_type_ref_mut = list_element_type_rc.borrow_mut();
+                if *list_element_type_ref_mut == Type::Unknown && value_to_set != &Value::Null {
+                    *list_element_type_ref_mut = value_type.clone(); // Infer type from this assignment
+                } else if !list_element_type_ref_mut.is_compatible_with(&value_type) && value_to_set != &Value::Null {
+                    return Err(Error::type_error(
+                        ErrorCode::T0001,
+                        format!("Cannot set list element of type {} with value of type {}.", *list_element_type_ref_mut, value_type),
+                        Some(final_value_loc.clone()),
+                    ));
+                }
+            } // Mut borrow of list_element_type_rc ends here
+            
+            let mut elements = list_ref.elements.borrow_mut();
+            if *idx < 0 || *idx as usize >= elements.len() {
+                return Err(Error::runtime(
+                    ErrorCode::R0000, // Index out of bounds
+                    format!("List index {} out of bounds for assignment to list of length {}.", idx, elements.len()),
+                    Some(index_expr_loc.clone()),
+                ));
+            }
+            elements[*idx as usize] = value_to_set.clone();
+            Ok(Value::Null)
+        } else {
+            Err(Error::type_error(
+                ErrorCode::T0007,
+                format!("List index must be an integer for set operation, got {}.", index_val.get_type()),
+                Some(index_expr_loc.clone()),
+            ))
+        }
+    }
+    // END: Added List Helper Methods
 }

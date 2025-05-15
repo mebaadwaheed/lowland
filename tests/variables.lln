@@ -27,4 +27,4 @@ println(message);
 let x: int = 42;
 let y: int = x * 2;
 println("x =", x, "y =", y); 
-println(name + version);
+println(name + toString(version));

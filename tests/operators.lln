@@ -32,7 +32,3 @@ func User() {
 println(Add(1, 2));
 
 User();
-
-while (1 == 1) {
-    println("numm");
-}

@@ -1,0 +1,44 @@
+// Test file for import functionality
+
+// Test standard library imports
+println("\n=== Testing Standard Library Imports ===");
+
+// Import specific functions
+including [std::math::sqrt, std::math::abs] from "standard";
+println("sqrt(16) =", sqrt(16));
+println("abs(-10) =", abs(-10));
+
+// Import entire module
+including [std::math] from "standard";
+println("pow(2, 3) =", pow(2, 3));
+println("floor(3.7) =", floor(3.7));
+
+// Test local file imports
+println("\n=== Testing Local File Imports ===");
+
+// Create a module file with exported functions
+func add(a: int, b: int): int {
+    return a + b;
+}
+
+func subtract(a: int, b: int): int {
+    return a - b;
+}
+
+export func multiply(a: int, b: int): int {
+    return a * b;
+}
+
+export func divide(a: int, b: int): int {
+    return a / b;
+}
+
+// Save this file as math_ops.lln and then import it
+including [multiply, divide] from "math_ops.lln";
+println("multiply(5, 3) =", multiply(5, 3));
+println("divide(10, 2) =", divide(10, 2));
+
+// Import all exported functions
+including "math_ops.lln";
+println("add(5, 3) =", add(5, 3));
+println("subtract(10, 2) =", subtract(10, 2)); 

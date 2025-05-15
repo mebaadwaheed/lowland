@@ -12,9 +12,11 @@ use crate::error::Error;
 pub enum Value {
     String(String),
     Int(i64),
+    Float(f64),
     Bool(bool),
     Object(ObjectRef),
     List(ListRef),
+    StdFunctionLink(String),
     Null,
 }
 
@@ -51,9 +53,11 @@ impl Value {
         match self {
             Value::String(_) => Type::String,
             Value::Int(_) => Type::Int,
+            Value::Float(_) => Type::Float,
             Value::Bool(_) => Type::Bool,
             Value::Object(_) => Type::Object,
             Value::List(list_ref) => Type::List(Box::new(list_ref.element_type.borrow().clone())),
+            Value::StdFunctionLink(_) => Type::Unknown,
             Value::Null => Type::Unknown,
         }
     }
@@ -63,33 +67,79 @@ impl Value {
         Ok(match self {
             Value::String(s) => s.clone(),
             Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Object(o) => format!("obj@{}", o.id),
             Value::List(l) => {
-                let elements: Vec<String> = l.elements.borrow().iter()
-                    .map(|e| e.to_string_value())
-                    .collect::<Result<Vec<String>, Error>>()?;
-                format!("[{}]", elements.join(", "))
+                let elements_borrow = l.elements.borrow();
+                let mut content = String::new();
+                for (i, e) in elements_borrow.iter().enumerate() {
+                    content.push_str(&e.to_string_value()?);
+                    if i < elements_borrow.len() - 1 {
+                        content.push_str(", ");
+                    }
+                }
+                format!("[{}]", content)
             }
+            Value::StdFunctionLink(name) => format!("<std_function: {}>", name),
+            Value::Null => "null".to_string(),
+        })
+    }
+
+    /// Convert this value to a raw string representation for println!
+    pub fn to_raw_display_string(&self) -> Result<String, Error> {
+        Ok(match self {
+            Value::String(s) => {
+                let mut escaped_s = String::with_capacity(s.len());
+                for c in s.chars() {
+                    match c {
+                        '\n' => escaped_s.push_str("\\n"),
+                        '\t' => escaped_s.push_str("\\t"),
+                        '\r' => escaped_s.push_str("\\r"),
+                        '"'  => escaped_s.push_str("\\\""),
+                        '\\' => escaped_s.push_str("\\\\"),
+                        _ => escaped_s.push(c),
+                    }
+                }
+                escaped_s
+            }
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Object(o) => format!("obj@{}", o.id),
+            Value::List(l) => {
+                let elements_borrow = l.elements.borrow();
+                let mut content = String::new();
+                for (i, e) in elements_borrow.iter().enumerate() {
+                    content.push_str(&e.to_raw_display_string()?);
+                    if i < elements_borrow.len() - 1 {
+                        content.push_str(", ");
+                    }
+                }
+                format!("[{}]", content)
+            }
+            Value::StdFunctionLink(name) => format!("<std_function: {}>", name),
             Value::Null => "null".to_string(),
         })
     }
 }
 
 impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Int(i) => write!(f, "{}", i),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Object(o) => write!(f, "obj@{}", o.id),
+            Value::String(s) => write!(formatter, "\\\"{}\\\"", s),
+            Value::Int(i) => write!(formatter, "{}", i),
+            Value::Float(f_val) => write!(formatter, "{}", f_val),
+            Value::Bool(b) => write!(formatter, "{}", b),
+            Value::Object(o) => write!(formatter, "obj@{}", o.id),
             Value::List(l) => {
                 let elements: Vec<String> = l.elements.borrow().iter()
                     .map(|e| e.to_string())
                     .collect();
-                write!(f, "[{}]", elements.join(", "))
+                write!(formatter, "[{}]", elements.join(", "))
             }
-            Value::Null => write!(f, "null"),
+            Value::StdFunctionLink(name) => write!(formatter, "<std_function: {}>", name),
+            Value::Null => write!(formatter, "null"),
         }
     }
 }

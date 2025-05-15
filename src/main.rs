@@ -63,7 +63,7 @@ fn run_file(file_path_buf: &PathBuf, interpreter: &mut Interpreter) {
         );
         return;
     }
-    
+
     let file_path_str = match file_path_buf.to_str() {
         Some(s) => s,
         None => {
@@ -74,7 +74,7 @@ fn run_file(file_path_buf: &PathBuf, interpreter: &mut Interpreter) {
 
     println!("Executing file: {}", file_path_buf.display());
     match interpreter.interpret_file(file_path_str) {
-        Ok(_) => {}
+                Ok(_) => {}
         Err(err) => {
             eprintln!("{} {}", "Error:".red().bold(), err);
         }

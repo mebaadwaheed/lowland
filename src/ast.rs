@@ -1,10 +1,23 @@
 use crate::token::Token;
 use crate::types::Type;
 use crate::value::Value;
+use crate::error::SourceLocation;
 
 /// Represents an expression in the Lowland language
 #[derive(Debug, Clone)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub loc: SourceLocation,
+}
+
+impl Expr {
+    pub fn new(kind: ExprKind, loc: SourceLocation) -> Self {
+        Self { kind, loc }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ExprKind {
     /// A literal value
     Literal(Value),
     
@@ -21,47 +34,59 @@ pub enum Expr {
     Logical(Box<Expr>, Token, Box<Expr>),
     
     /// A function call: println(expr, expr, ...)
-    Call(String, Vec<Expr>),
+    Call { name_token: Token, arguments: Vec<Expr> },
     
     /// A variable reference
-    Variable(String),
+    Variable(Token),
     
     /// An assignment expression: var = expr
-    Assign(String, Box<Expr>),
+    Assign { name_token: Token, value: Box<Expr> },
     
     /// Increment expression: var++
-    Increment(String),
+    Increment(Token),
     
     /// Decrement expression: var--
-    Decrement(String),
+    Decrement(Token),
 
     /// A list literal e.g. [1, "two", true]
     ListLiteral(Vec<Expr>),
 
     /// A method call on an object: object.method(args)
-    MethodCall(Box<Expr>, Token, Vec<Expr>), // object, method_name_token, arguments
+    MethodCall { object: Box<Expr>, method_name_token: Token, arguments: Vec<Expr> },
 
     // Object-related expressions
     /// An object literal e.g. { key1: value1, key2: value2 }
-    ObjectLiteral { properties: Vec<(Token, Expr)> }, // key_token, value_expr
+    ObjectLiteral { properties: Vec<(Token, Expr)> },
 
     /// Property access: object.property
-    Get { object: Box<Expr>, name: Token }, // object_expr, property_name_token
+    Get { object: Box<Expr>, name: Token },
 
     /// Property assignment: object.property = value
-    Set { object: Box<Expr>, name: Token, value: Box<Expr> }, // object_expr, property_name_token, value_expr
+    Set { object: Box<Expr>, name: Token, value: Box<Expr> },
 }
 
 /// Parameter for a function declaration
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    pub name: String,
+    pub name_token: Token,
     pub param_type: Type,
 }
 
 /// Represents a statement in the Lowland language
 #[derive(Debug, Clone)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub loc: SourceLocation,
+}
+
+impl Stmt {
+    pub fn new(kind: StmtKind, loc: SourceLocation) -> Self {
+        Self { kind, loc }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum StmtKind {
     /// An expression statement: expr;
     Expression(Expr),
     
@@ -69,34 +94,37 @@ pub enum Stmt {
     Println(Vec<Expr>),
     
     /// A variable declaration: let var: type = expr;
-    Var(String, Type, Option<Expr>, bool),  // name, type, initializer, is_mutable
+    Var { name_token: Token, var_type: Type, initializer: Option<Expr>, is_mutable: bool },
     
     /// A block statement containing a list of statements
     Block(Vec<Stmt>),
     
     /// An if statement: if (condition) { then_branch } elif (condition) { elif_branch } else { else_branch }
-    If(Expr, Box<Stmt>, Vec<(Expr, Box<Stmt>)>, Option<Box<Stmt>>),  // condition, then_branch, elif_branches, else_branch
+    If { condition: Expr, then_branch: Box<Stmt>, elif_branches: Vec<(Expr, Box<Stmt>)>, else_branch: Option<Box<Stmt>> },
     
     /// A function declaration: func name(param1: type, param2: type) { body }
-    Function(String, Vec<Parameter>, Option<Type>, Box<Stmt>, bool),  // name, parameters, return_type, body, is_exported
+    Function { name_token: Token, parameters: Vec<Parameter>, return_type: Type, body: Box<Stmt>, is_exported: bool },
     
     /// A return statement: return expr;
-    Return(Option<Expr>),  // optional return value
+    Return(Option<Expr>),
 
     /// A while loop: while (condition) { body }
-    While(Expr, Box<Stmt>),  // condition, body
+    While { condition: Expr, body: Box<Stmt> },
     
     /// A for loop: for (init; condition; update) { body }
-    For(Box<Stmt>, Expr, Box<Expr>, Box<Stmt>),  // initialization, condition, update, body
+    For { initializer: Option<Box<Stmt>>, condition: Option<Expr>, increment: Option<Box<Expr>>, body: Box<Stmt> },
     
     /// A break statement: break;
-    Break,
+    Break(Token),
     
     /// A continue statement: continue;
-    Continue,
+    Continue(Token),
 
-    /// An including statement: including "path/to/file.lln"; or including [foo, bar] from "path/to/file.lln";
-    Including { path: String, imports: Option<Vec<Token>> }, // file path, optional list of specific identifiers (Tokens) to import
+    /// An including statement: including "path/to/file.lln"; or including [item1, item2::subitem] from "path/to/file.lln";
+    Including { path_token: Token, path_val: String, imports: Option<Vec<String>> },
+
+    /// A println! statement: println!(expr, expr, ...);
+    PrintRaw(Vec<Expr>),
 }
 
 /// Represents a program - the root of the AST

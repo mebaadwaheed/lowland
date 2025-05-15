@@ -1,0 +1,127 @@
+// Lowland Error Reporting Review File
+
+// --- Lexer Errors ---
+
+// L0001: Unknown character
+// let x = 10 @ 5; 
+
+// L0002: Unterminated string literal
+// let bad_string = "Hello, Lowland, this string never ends;
+// println(bad_string);
+
+// L0003: Invalid number format (if floats are disallowed by lexer)
+// let float_num = 123.45; 
+
+
+// --- Parser Errors ---
+
+// P0001: Unexpected token (e.g., misplaced semicolon)
+// let x: int = ; 10; 
+
+// P0002: Expected token (e.g., missing semicolon, missing brace)
+// let no_semicolon: string = "oops"
+// func missing_brace_func() { println("body") // Expected '}'
+
+// P0004: Expected statement / block (e.g., if without a block)
+// if (true) println("not a block"); 
+
+// P0005: Expected identifier (e.g., let without variable name)
+// let : int = 20; 
+
+// P0006: Expected type annotation (if mandatory)
+// let no_type_annotation = 30; 
+
+// P0007: Invalid assignment target
+// 100 = "cannot assign to literal"; 
+
+// P0010: Expected function body
+// func no_body(): int; 
+
+// P0012: Break outside loop
+// break; 
+
+// P0013: Continue outside loop
+// continue; 
+
+
+// --- Type Errors (Detected at Runtime by Interpreter) ---
+
+// T0001: Type mismatch (variable assignment)
+// let typed_var: int = "this is not an int";
+// println(typed_var);
+
+// T0001: Type mismatch (function return from an expression)
+// func returns_string_needs_int(): int {
+// return "not an int"; 
+// }
+// let val_from_func: int = returns_string_needs_int();
+
+// T0002: Operation not supported for type (unary)
+// let op_not_supported_unary: bool = !"a string"; 
+// let op_not_supported_unary_minus: int = -true;
+
+// T0003: Incompatible types for operation (binary)
+let incompatible_add: string = "string" + 10; 
+
+// T0004: Variable not mutable
+// let immutable_var: int = 50;
+// immutable_var = 51; 
+
+// T0005: Expected boolean condition
+// if (123) { println("Condition was not bool"); }
+// while ("not a bool") { println("looping?"); break; }
+
+// T0006: Return type mismatch (function definition vs. return statement)
+// func wrong_return_type(): string {
+// let x: int = 100;
+// return x; // Expected string, got int
+// }
+// println(wrong_return_type());
+
+// T0007: Argument type mismatch
+// func needs_int_arg(num: int) {
+// println(num);
+// }
+// needs_int_arg("this is a string"); 
+
+
+// --- Runtime Errors ---
+
+// R0001: Undefined variable
+// println(i_do_not_exist); 
+
+// R0002: Division by zero
+// let div_zero: int = 100 / 0;
+// println(div_zero);
+
+// R0004: Not a function
+// let not_a_function_var: int = 70;
+// not_a_function_var(); 
+
+// R0005: Incorrect number of arguments (user-defined function)
+// func takes_one_arg(a: int) { println(a); }
+// takes_one_arg(1, 2); 
+
+// R0006: Invalid increment/decrement target (if only for mutable ints)
+// let& str_var_inc: string = "abc";
+// str_var_inc++; 
+// let non_mutable_inc: int = 0;
+// non_mutable_inc++;
+
+// R0007: Modulo by zero
+// let mod_zero: int = 10 % 0;
+// println(mod_zero);
+
+
+// --- Test a few valid things to ensure interpreter still works ---
+// let& mutable_counter: int = 0;
+// mutable_counter++;
+// mutable_counter = mutable_counter + 5;
+// println("Mutable counter:", mutable_counter); // Expected: Mutable counter: 6
+
+// func add(a: int, b: int): int {
+// return a + b;
+// }
+// println("Add function result:", add(10, 25)); // Expected: Add function result: 35
+
+println("Error review file execution finished (if no fatal errors stopped it earlier)."); 

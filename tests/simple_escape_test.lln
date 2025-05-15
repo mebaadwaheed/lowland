@@ -1,0 +1,13 @@
+// Simple string escape test
+
+println("=== String Escape Basic Tests ===");
+
+// Basic escape sequences
+println("Newline: A\nB");
+println("Tab: A\tB");
+println("Double quote: \"quoted\"");
+println("Backslash: C:\\\\path\\\\to\\\\file");
+
+// String assignment
+let escaped_string: string = "Escaped\tstring\nwith\nnewlines";
+println(escaped_string); 

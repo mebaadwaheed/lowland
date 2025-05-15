@@ -1,0 +1,26 @@
+// Test file for println and println!
+
+println("=== println (normal) vs println! (raw) ===");
+
+let test_string_val: string = "Hello\nWorld\twith tabs and \"quotes\" and \\backslashes.";
+
+println("Normal println:");
+println(test_string_val);
+println("One\nTwo", "Three\tFour");
+println(123, true, null, [1, 2, 3], {keyA: "valA", keyB: "valB\nRaw"});
+
+println!("Raw println!:");
+println!(test_string_val);
+println!("One\nTwo", "Three\tFour");
+println!(123, true, null, [1, 2, 3], {keyA: "valA", keyB: "valB\nRaw"});
+
+println("--- Direct literals --- ");
+println("Normal direct: Hello\nWorld");
+println!("Raw direct: Hello\nWorld");
+
+println("--- Empty Calls ---");
+println("Empty println next:");
+println();
+println("Empty println! next:");
+println!();
+println("Done with empty calls."); 

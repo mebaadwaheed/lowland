@@ -1,0 +1,89 @@
+including [ std::math ] from "standard";
+
+println("=== Float Tests ===");
+
+let fa: float = 10.5;
+let fb: float = 2.0;
+let ia: int = 5;
+let ib: int = 2;
+
+println("Float literals and types:");
+println(fa, fb, 0.5, .25, 1.); // Test various float literal forms
+
+println("--- Arithmetic ---");
+println("fa + fb =", fa + fb);     // float + float
+println("fa + ia =", fa + ia);     // float + int
+println("ia + fb =", ia + fb);     // int + float
+println("fa - fb =", fa - fb);
+println("fa * fb =", fa * fb);
+println("fa / fb =", fa / fb);     // float / float
+println("fa / ia =", fa / ia);     // float / int
+println("ia / fb =", ia / fb);     // int / float
+println("ia / ib =", ia / ib);     // int / int (integer division)
+println("10 / 4 =", 10 / 4);     // int / int
+println("10.0 / 4.0 =", 10.0 / 4.0);
+println("10 / 4.0 =", 10 / 4.0);
+println("10.0 / 4 =", 10.0 / 4);
+
+println("fa ** fb =", fa ** fb);   // float ** float
+println("10.0 ** 0.5 =", 10.0 ** 0.5);
+println("ia ** fb =", ia ** fb);   // int ** float
+println("fa ** ib =", fa ** ib);   // float ** int
+println("3 ** -2 =", 3 ** -2);   // int ** neg_int (should be float)
+
+println("--- Unary Minus ---");
+println("-fa =", -fa);
+println("-0.75 =", -0.75);
+
+println("--- Comparisons ---");
+println("fa > fb =", fa > fb);
+println("fa > ia =", fa > ia); // 10.5 > 5
+println("ia > fb =", ia > fb); // 5 > 2.0
+println("5.0 == 5 =", 5.0 == 5);
+println("5 == 5.0 =", 5 == 5.0);
+println("5.1 != 5 =", 5.1 != 5);
+println("5.0 < 5.00000000001 =", 5.0 < 5.00000000001);
+
+println("--- Type Casting ---");
+println("toInt(123.789) =", toInt(123.789));
+println("toInt(-2.99) =", toInt(-2.99));
+println("toInt(\"456.7\") =", toInt("456.7"));
+println("toInt(\"789\") =", toInt("789"));
+// println("toInt(\"abc\") =", toInt("abc")); // Expected to error
+
+println("toFloat(123) =", toFloat(123));
+println("toFloat(-2) =", toFloat(-2));
+println("toFloat(\"456.78\") =", toFloat("456.78"));
+println("toFloat(\"789\") =", toFloat("789"));
+println("toFloat(true) =", toFloat(true));
+println("toFloat(null) =", toFloat(null));
+// println("toFloat(\"abc\") =", toFloat("abc")); // Expected to error
+
+println("let x: float = 10; println(x);");
+let x: float = 10; 
+println(x);
+
+// println("let y: int = 10.7; // This should cause a type error during var declaration due to incompatible types.");
+// let y: int = 10.7; // This should be an error.
+// println(y);
+
+println("--- Sqrt Test (via math module) ---");
+println("math.sqrt(25) =", math.sqrt(25));
+println("math.sqrt(2.0) =", math.sqrt(2.0));
+
+println("--- Abs Test (via math module) ---");
+println("math.abs(-10) =", math.abs(-10));
+println("math.abs(10.5) =", math.abs(10.5));
+
+println("--- Pow Test (via math module) ---");
+println("math.pow(3, 4) =", math.pow(3, 4));
+println("math.pow(2.5, 2) =", math.pow(2.5, 2));
+
+println("--- Floor Test (via math module) ---");
+println("math.floor(6.99) =", math.floor(6.99));
+println("math.floor(-3.01) =", math.floor(-3.01));
+
+// println("sqrt(-4) =", sqrt(-4)); // Expected error
+// println("math.sqrt(-4) =", math.sqrt(-4)); // Expected error
+
+println("Done with float tests."); 
