@@ -79,18 +79,19 @@ impl fmt::Display for ErrorCode {
 pub struct SourceLocation {
     pub line: usize,
     pub column: usize,
+    pub file_path: usize,
     // Optional: could also store file_path or source_line_text
 }
 
 impl SourceLocation {
-    pub fn new(line: usize, column: usize) -> Self {
-        Self { line, column }
+    pub fn new(line: usize, column: usize, file_path: usize) -> Self {
+        Self { line, column, file_path }
     }
 }
 
 impl fmt::Display for SourceLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}, column {}", self.line, self.column)
+        write!(f, "line {}, column {}, file_path {}", self.line, self.column, self.file_path)
     }
 }
 

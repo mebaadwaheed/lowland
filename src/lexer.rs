@@ -12,6 +12,7 @@ pub struct Lexer {
     column: usize,     // Current column number on the current line
     start_column: usize, // Column number where the current lexeme started
     keywords: HashMap<String, TokenType>,
+    file_path: usize,  // File path identifier for error reporting
 }
 
 impl Lexer {
@@ -56,6 +57,7 @@ impl Lexer {
             column: 1,
             start_column: 1,
             keywords,
+            file_path: 0,  // Default to 0 for now
         }
     }
 
@@ -127,7 +129,7 @@ impl Lexer {
                     return Err(Error::syntax(
                         ErrorCode::L0001, // Example: Using L0001 for general unknown/unexpected chars
                         format!("Unexpected character '{}'. Did you mean '||'?", '|'),
-                        Some(SourceLocation::new(self.line, self.start_column)),
+                        Some(SourceLocation::new(self.line, self.start_column, self.file_path)),
                     ));
                 }
             },
@@ -187,7 +189,7 @@ impl Lexer {
                         return Err(Error::syntax(
                             ErrorCode::L0003, // Unterminated multi-line comment
                             "Unterminated multi-line comment.".to_string(),
-                            Some(SourceLocation::new(comment_start_line, comment_start_column)),
+                            Some(SourceLocation::new(comment_start_line, comment_start_column, self.file_path)),
                         ));
                     }
                     // No token added for comments
@@ -245,7 +247,7 @@ impl Lexer {
                     return Err(Error::syntax(
                         ErrorCode::L0001, // Unknown character
                         format!("Unknown character '{}'", c),
-                        Some(SourceLocation::new(self.line, self.start_column)), // Use start_column
+                        Some(SourceLocation::new(self.line, self.start_column, self.file_path)), // Use start_column
                     ));
                 }
             }
@@ -357,7 +359,7 @@ impl Lexer {
             return Err(Error::syntax(
                 ErrorCode::L0002, // Unterminated string
                 "Unterminated string literal.".to_string(),
-                Some(SourceLocation::new(string_start_line, string_start_column)),
+                Some(SourceLocation::new(string_start_line, string_start_column, self.file_path)),
             ));
         }
 
@@ -412,14 +414,14 @@ impl Lexer {
                         return Err(Error::syntax(
                             ErrorCode::L0004,
                             format!("Invalid escape sequence '\\{}'.", escaped_char),
-                            Some(SourceLocation::new(error_report_line, error_report_col_start /* + current_col_offset -1 */))
+                            Some(SourceLocation::new(error_report_line, error_report_col_start /* + current_col_offset -1 */, self.file_path)),
                         ));
                     },
                     None => {
                         return Err(Error::syntax(
                             ErrorCode::L0004,
                             "Incomplete escape sequence at end of string.".to_string(),
-                            Some(SourceLocation::new(error_report_line, error_report_col_start /* + current_col_offset -1 */))
+                            Some(SourceLocation::new(error_report_line, error_report_col_start /* + current_col_offset -1 */, self.file_path)),
                         ));
                     }
                 }

@@ -27,7 +27,7 @@ impl Parser {
     fn declaration_or_statement(&mut self) -> Result<Stmt, Error> {
         // For error reporting on unexpected tokens at statement boundaries
         let peeked_token_for_loc = self.peek().clone();
-        let default_loc = SourceLocation::new(peeked_token_for_loc.line, peeked_token_for_loc.column);
+        let default_loc = SourceLocation::new(peeked_token_for_loc.line, peeked_token_for_loc.column, 0);
 
         if self.match_token(TokenType::Export) {
             let export_keyword = self.previous().clone();
@@ -38,7 +38,7 @@ impl Parser {
             }
             // Potentially other exportable items later (e.g., variables, structs)
             return Err(Error::syntax(ErrorCode::P0004, "Expect 'func' after 'export'.".to_string(), 
-                Some(SourceLocation::new(export_keyword.line, export_keyword.column + export_keyword.lexeme.len()))));
+                Some(SourceLocation::new(export_keyword.line, export_keyword.column + export_keyword.lexeme.len(), 0))));
         }
         if self.match_token(TokenType::Func) {
             let func_keyword = self.previous().clone();
@@ -84,7 +84,7 @@ impl Parser {
         }
         if self.match_token(TokenType::LeftBrace) {
             let opening_brace = self.previous().clone();
-            let loc = SourceLocation::new(opening_brace.line, opening_brace.column);
+            let loc = SourceLocation::new(opening_brace.line, opening_brace.column, 0);
             let stmts = self.block()?; 
             return Ok(Stmt::new(StmtKind::Block(stmts), loc));
         }
@@ -95,7 +95,7 @@ impl Parser {
 
     fn println_statement(&mut self) -> Result<Stmt, Error> {
         let println_token = self.previous().clone(); // 'println' token
-        let loc = SourceLocation::new(println_token.line, println_token.column);
+        let loc = SourceLocation::new(println_token.line, println_token.column, 0);
 
         self.consume(TokenType::LeftParen, "Expect '(' after 'println'.")?;
         let arguments = if !self.check(TokenType::RightParen) {
@@ -111,7 +111,7 @@ impl Parser {
 
     fn print_raw_statement(&mut self) -> Result<Stmt, Error> {
         let print_raw_token = self.previous().clone(); // 'println!' token
-        let loc = SourceLocation::new(print_raw_token.line, print_raw_token.column);
+        let loc = SourceLocation::new(print_raw_token.line, print_raw_token.column, 0);
 
         self.consume(TokenType::LeftParen, "Expect '(' after 'println!'.")?;
         let arguments = if !self.check(TokenType::RightParen) {
@@ -134,7 +134,7 @@ impl Parser {
 
     fn var_declaration(&mut self) -> Result<Stmt, Error> {
         let let_token = self.previous().clone(); // 'let' token (already consumed by declaration_or_statement)
-        let decl_loc = SourceLocation::new(let_token.line, let_token.column);
+        let decl_loc = SourceLocation::new(let_token.line, let_token.column, 0);
 
         let is_mutable = self.match_token(TokenType::Ampersand);
 
@@ -149,7 +149,7 @@ impl Parser {
             return Err(Error::syntax(
                 ErrorCode::P0006, // Expected type annotation
                 "Expect ':' and type annotation after variable name.".to_string(),
-                Some(SourceLocation::new(err_loc_token.line, err_loc_token.column)),
+                Some(SourceLocation::new(err_loc_token.line, err_loc_token.column, 0)),
             ));
         };
         
@@ -169,7 +169,7 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<Type, Error> {
         let type_token = self.advance().clone(); // Consume the type token
-        let loc = SourceLocation::new(type_token.line, type_token.column);
+        let loc = SourceLocation::new(type_token.line, type_token.column, 0);
 
         match type_token.token_type {
             TokenType::String => Ok(Type::String),
@@ -195,7 +195,7 @@ impl Parser {
 
     fn if_statement(&mut self) -> Result<Stmt, Error> {
         let if_token = self.previous().clone(); // 'if' token (already consumed)
-        let loc = SourceLocation::new(if_token.line, if_token.column);
+        let loc = SourceLocation::new(if_token.line, if_token.column, 0);
 
         self.consume(TokenType::LeftParen, "Expect '(' after 'if'.")?;
         let condition = self.expression()?;
@@ -206,14 +206,14 @@ impl Parser {
             return Err(Error::syntax(
                 ErrorCode::P0004, 
                 "Expect '{' to start a block for 'then' branch.".to_string(), 
-                Some(SourceLocation::new(then_branch_start_token.line, then_branch_start_token.column))
+                Some(SourceLocation::new(then_branch_start_token.line, then_branch_start_token.column, 0))
             ));
         }
         // self.statement() expects a block or a single statement.
         // For if/elif/else, we mandate a block.
         // So, directly parse a block using self.block() after consuming LeftBrace within statement/block logic.
         // The current self.statement() -> self.block() if LeftBrace is fine.
-        let then_stmt_outer = self.statement(SourceLocation::new(then_branch_start_token.line, then_branch_start_token.column))?;
+        let then_stmt_outer = self.statement(SourceLocation::new(then_branch_start_token.line, then_branch_start_token.column, 0))?;
         let then_branch = match then_stmt_outer.kind {
             StmtKind::Block(_) => Box::new(then_stmt_outer),
             _ => return Err(Error::syntax(
@@ -235,10 +235,10 @@ impl Parser {
                  return Err(Error::syntax(
                     ErrorCode::P0004, 
                     "Expect '{' to start a block for 'elif' branch.".to_string(), 
-                    Some(SourceLocation::new(elif_branch_start_token.line, elif_branch_start_token.column))
+                    Some(SourceLocation::new(elif_branch_start_token.line, elif_branch_start_token.column, 0))
                 ));
             }
-            let elif_stmt_outer = self.statement(SourceLocation::new(elif_branch_start_token.line, elif_branch_start_token.column))?;
+            let elif_stmt_outer = self.statement(SourceLocation::new(elif_branch_start_token.line, elif_branch_start_token.column, 0))?;
             let elif_branch = match elif_stmt_outer.kind {
                 StmtKind::Block(_) => Box::new(elif_stmt_outer),
                 _ => return Err(Error::syntax(
@@ -256,10 +256,10 @@ impl Parser {
                  return Err(Error::syntax(
                     ErrorCode::P0004, 
                     "Expect '{' to start a block for 'else' branch.".to_string(), 
-                    Some(SourceLocation::new(else_branch_start_token.line, else_branch_start_token.column))
+                    Some(SourceLocation::new(else_branch_start_token.line, else_branch_start_token.column, 0))
                 ));
             }
-            let else_stmt = self.statement(SourceLocation::new(else_branch_start_token.line, else_branch_start_token.column))?;
+            let else_stmt = self.statement(SourceLocation::new(else_branch_start_token.line, else_branch_start_token.column, 0))?;
             let else_b = match else_stmt.kind {
                 StmtKind::Block(_) => Box::new(else_stmt),
                 _ => return Err(Error::syntax(
@@ -290,7 +290,7 @@ impl Parser {
         // To provide a better error message if is_at_end() was true before RightBrace:
         if closing_brace_token.token_type != TokenType::RightBrace && self.is_at_end() {
              return Err(Error::syntax(ErrorCode::P0001, "Unterminated block; expected '}'.".to_string(), 
-                Some(SourceLocation::new(closing_brace_token.line, closing_brace_token.column))));
+                Some(SourceLocation::new(closing_brace_token.line, closing_brace_token.column, 0))));
         }
         Ok(statements)
     }
@@ -307,7 +307,7 @@ impl Parser {
                     return Err(Error::syntax(
                         ErrorCode::P0008,
                         "Cannot have more than 255 parameters.".to_string(),
-                        Some(SourceLocation::new(self.peek().line, self.peek().column)),
+                        Some(SourceLocation::new(self.peek().line, self.peek().column, 0)),
                     ));
                 }
 
@@ -336,7 +336,7 @@ impl Parser {
         } else {
             // Fallback if body is empty, use location of the opening brace '{'.
             // For now, use the func keyword token's location as a rough estimate.
-            SourceLocation::new(func_keyword_token.line, func_keyword_token.column)
+            SourceLocation::new(func_keyword_token.line, func_keyword_token.column, 0)
         };
         let body = Stmt::new(StmtKind::Block(body_stmts), body_loc_start);
 
@@ -348,13 +348,13 @@ impl Parser {
                 body: Box::new(body),
                 is_exported,
             },
-            SourceLocation::new(func_keyword_token.line, func_keyword_token.column),
+            SourceLocation::new(func_keyword_token.line, func_keyword_token.column, 0),
         ))
     }
 
     fn return_statement(&mut self) -> Result<Stmt, Error> {
         let return_token = self.previous().clone(); // 'return' token
-        let loc = SourceLocation::new(return_token.line, return_token.column);
+        let loc = SourceLocation::new(return_token.line, return_token.column, 0);
 
         let value = if !self.check(TokenType::Semicolon) {
             Some(self.expression()?)
@@ -367,7 +367,7 @@ impl Parser {
 
     fn while_statement(&mut self) -> Result<Stmt, Error> {
         let while_token = self.previous().clone(); // 'while' token (already consumed)
-        let loc = SourceLocation::new(while_token.line, while_token.column);
+        let loc = SourceLocation::new(while_token.line, while_token.column, 0);
 
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.")?;
         let condition = self.expression()?;
@@ -378,10 +378,10 @@ impl Parser {
              return Err(Error::syntax(
                 ErrorCode::P0004, // Expected statement (block for while)
                 "Expect '{' to start a block for while loop body.".to_string(), 
-                Some(SourceLocation::new(body_start_token.line, body_start_token.column))
+                Some(SourceLocation::new(body_start_token.line, body_start_token.column, 0))
             ));
         }
-        let body_stmt = self.statement(SourceLocation::new(body_start_token.line, body_start_token.column))?; // self.statement() will parse the block
+        let body_stmt = self.statement(SourceLocation::new(body_start_token.line, body_start_token.column, 0))?; // self.statement() will parse the block
         let body = match body_stmt.kind {
             StmtKind::Block(_) => Box::new(body_stmt),
             _ => return Err(Error::syntax(
@@ -396,7 +396,7 @@ impl Parser {
 
     fn for_statement(&mut self) -> Result<Stmt, Error> {
         let for_token = self.previous().clone(); // 'for' token (already consumed)
-        let loc = SourceLocation::new(for_token.line, for_token.column);
+        let loc = SourceLocation::new(for_token.line, for_token.column, 0);
 
         self.consume(TokenType::LeftParen, "Expect '(' after 'for'.")?;
         
@@ -435,10 +435,10 @@ impl Parser {
              return Err(Error::syntax(
                 ErrorCode::P0004, 
                 "Expect '{' to start a block for for loop body.".to_string(), 
-                Some(SourceLocation::new(body_start_token.line, body_start_token.column))
+                Some(SourceLocation::new(body_start_token.line, body_start_token.column, 0))
             ));
         }
-        let body_stmt = self.statement(SourceLocation::new(body_start_token.line, body_start_token.column))?; // self.statement() will parse the block
+        let body_stmt = self.statement(SourceLocation::new(body_start_token.line, body_start_token.column, 0))?; // self.statement() will parse the block
         let body = match body_stmt.kind {
             StmtKind::Block(_) => Box::new(body_stmt),
             _ => return Err(Error::syntax(
@@ -453,7 +453,7 @@ impl Parser {
 
     fn break_statement(&mut self) -> Result<Stmt, Error> {
         let break_token = self.previous().clone(); // 'break' token (already consumed)
-        let loc = SourceLocation::new(break_token.line, break_token.column);
+        let loc = SourceLocation::new(break_token.line, break_token.column, 0);
         // Check if we are inside a loop would be a semantic check for the interpreter or a later parser pass.
         // For now, just parse it. Error P0012 (Break outside loop) could be used if context is tracked.
         self.consume(TokenType::Semicolon, "Expect ';' after 'break'.")?;
@@ -462,7 +462,7 @@ impl Parser {
 
     fn continue_statement(&mut self) -> Result<Stmt, Error> {
         let continue_token = self.previous().clone(); // 'continue' token (already consumed)
-        let loc = SourceLocation::new(continue_token.line, continue_token.column);
+        let loc = SourceLocation::new(continue_token.line, continue_token.column, 0);
         // Similar to break, P0013 (Continue outside loop) is for contextual check.
         self.consume(TokenType::Semicolon, "Expect ';' after 'continue'.")?;
         Ok(Stmt::new(StmtKind::Continue(continue_token), loc))
@@ -470,7 +470,7 @@ impl Parser {
 
     fn including_statement(&mut self) -> Result<Stmt, Error> {
         let including_keyword_token = self.previous().clone();
-        let loc = SourceLocation::new(including_keyword_token.line, including_keyword_token.column);
+        let loc = SourceLocation::new(including_keyword_token.line, including_keyword_token.column, 0);
 
         let mut imports_list: Option<Vec<String>> = None;
         let path_literal_token: Token;
@@ -484,7 +484,7 @@ impl Parser {
                     let first_component_token = self.advance().clone();
                     let mut current_import_path = match first_component_token.token_type {
                         TokenType::Identifier | TokenType::Sqrt | TokenType::Float | TokenType::Int | TokenType::String | TokenType::Bool | TokenType::Obj | TokenType::List => first_component_token.lexeme,
-                        _ => return Err(Error::syntax(ErrorCode::P0002, "Expect identifier or valid keyword for import path component.".to_string(), Some(SourceLocation::new(first_component_token.line, first_component_token.column))))
+                        _ => return Err(Error::syntax(ErrorCode::P0002, "Expect identifier or valid keyword for import path component.".to_string(), Some(SourceLocation::new(first_component_token.line, first_component_token.column, 0))))
                     };
                     
                     while self.match_token(TokenType::ColonColon) {
@@ -493,7 +493,7 @@ impl Parser {
                         let next_component_token = self.advance().clone();
                         let next_component_lexeme = match next_component_token.token_type {
                             TokenType::Identifier | TokenType::Sqrt | TokenType::Float | TokenType::Int | TokenType::String | TokenType::Bool | TokenType::Obj | TokenType::List => next_component_token.lexeme,
-                            _ => return Err(Error::syntax(ErrorCode::P0002, "Expect identifier or valid keyword after '::' in import path.".to_string(), Some(SourceLocation::new(next_component_token.line, next_component_token.column))))
+                            _ => return Err(Error::syntax(ErrorCode::P0002, "Expect identifier or valid keyword after '::' in import path.".to_string(), Some(SourceLocation::new(next_component_token.line, next_component_token.column, 0))))
                         };
                         current_import_path.push_str(&next_component_lexeme);
                     }
@@ -540,7 +540,7 @@ impl Parser {
             let equals_token = self.previous().clone();
             let value = self.assignment()?;
 
-            let assign_loc = SourceLocation::new(equals_token.line, equals_token.column);
+            let assign_loc = SourceLocation::new(equals_token.line, equals_token.column, 0);
 
             match expr.kind {
                 ExprKind::Variable(name_token) => {
@@ -559,7 +559,7 @@ impl Parser {
                     Err(Error::syntax(
                         ErrorCode::P0007,
                         "Invalid assignment target.".to_string(),
-                        Some(SourceLocation::new(equals_token.line, equals_token.column)),
+                        Some(SourceLocation::new(equals_token.line, equals_token.column, 0)),
                     ))
                 }
             }
@@ -574,7 +574,7 @@ impl Parser {
         while self.match_token(TokenType::PipePipe) {
             let operator = self.previous().clone();
             let right = self.logical_and()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Logical(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -587,7 +587,7 @@ impl Parser {
         while self.match_token(TokenType::AmpersandAmpersand) {
             let operator = self.previous().clone();
             let right = self.equality()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Logical(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -600,7 +600,7 @@ impl Parser {
         while self.match_tokens(&[TokenType::EqualEqual, TokenType::BangEqual]) {
             let operator = self.previous().clone();
             let right = self.comparison()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -618,7 +618,7 @@ impl Parser {
         ]) {
             let operator = self.previous().clone();
             let right = self.term()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -631,7 +631,7 @@ impl Parser {
         while self.match_tokens(&[TokenType::Plus, TokenType::Minus]) {
             let operator = self.previous().clone();
             let right = self.factor()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -644,7 +644,7 @@ impl Parser {
         while self.match_tokens(&[TokenType::Star, TokenType::Slash, TokenType::StarStar, TokenType::Modulo]) {
             let operator = self.previous().clone();
             let right = self.unary()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
 
@@ -655,7 +655,7 @@ impl Parser {
         if self.match_tokens(&[TokenType::Bang, TokenType::Minus]) {
             let operator = self.previous().clone();
             let right = self.unary()?;
-            let loc = SourceLocation::new(operator.line, operator.column);
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
             Ok(Expr::new(ExprKind::Unary(operator, Box::new(right)), loc))
         } else {
             self.call_or_method_access()
@@ -679,7 +679,7 @@ impl Parser {
                     // Fallback to original error: "Expect property name after '.'"
                     name_token = self.consume(TokenType::Identifier, "Expect property name after '.'.")?.clone();
                 }
-                let _access_loc = SourceLocation::new(name_token.line, name_token.column); 
+                let _access_loc = SourceLocation::new(name_token.line, name_token.column, 0); 
 
                 if self.match_token(TokenType::LeftParen) { // Method call: object.name(...)
                     let arguments = self.parse_argument_list()?;
@@ -744,7 +744,7 @@ impl Parser {
         }
         if arguments.len() > 255 {
             let err_loc = arguments.last().map_or_else(
-                || SourceLocation::new(self.peek().line, self.peek().column),
+                || SourceLocation::new(self.peek().line, self.peek().column, 0),
                 |arg| arg.loc.clone()
             );
             return Err(Error::syntax(ErrorCode::P0008, "Cannot have more than 255 arguments.".to_string(), Some(err_loc)));
@@ -754,7 +754,7 @@ impl Parser {
 
     fn primary(&mut self) -> Result<Expr, Error> {
         let token = self.peek().clone();
-        let loc = SourceLocation::new(token.line, token.column);
+        let loc = SourceLocation::new(token.line, token.column, 0);
 
         if self.match_token(TokenType::False) {
             return Ok(Expr::new(ExprKind::Literal(Value::Bool(false)), loc));
@@ -805,13 +805,13 @@ impl Parser {
             // Postfix increment/decrement only for true identifiers
             if self.match_token(TokenType::PlusPlus) { // match_token advances
                 let op_token = self.previous().clone(); // op_token is '++'
-                let op_loc = SourceLocation::new(op_token.line, op_token.column);
+                let op_loc = SourceLocation::new(op_token.line, op_token.column, 0);
                 // ExprKind::Increment takes the variable token. Its loc should be the operator.
                 return Ok(Expr::new(ExprKind::Increment(token), op_loc));
             }
             if self.match_token(TokenType::MinusMinus) { // match_token advances
                 let op_token = self.previous().clone(); // op_token is '--'
-                let op_loc = SourceLocation::new(op_token.line, op_token.column);
+                let op_loc = SourceLocation::new(op_token.line, op_token.column, 0);
                 return Ok(Expr::new(ExprKind::Decrement(token), op_loc));
             }
             // If not inc/dec, it's a plain variable.
@@ -833,7 +833,7 @@ impl Parser {
             return Ok(Expr::new(ExprKind::Grouping(Box::new(expr)), loc));
         }
         if self.match_token(TokenType::LeftBracket) {
-            let opening_bracket_loc = SourceLocation::new(self.previous().line, self.previous().column);
+            let opening_bracket_loc = SourceLocation::new(self.previous().line, self.previous().column, 0);
             let mut elements = Vec::new();
             if !self.check(TokenType::RightBracket) {
                 loop {
@@ -851,7 +851,7 @@ impl Parser {
         }
 
         if self.match_token(TokenType::LeftBrace) {
-            let opening_brace_loc = SourceLocation::new(self.previous().line, self.previous().column);
+            let opening_brace_loc = SourceLocation::new(self.previous().line, self.previous().column, 0);
             let mut properties = Vec::new();
             if !self.check(TokenType::RightBrace) {
                 loop {
@@ -876,7 +876,7 @@ impl Parser {
         Err(Error::syntax(
             ErrorCode::P0002,
             format!("Unexpected token '{}'. Expect expression at line {}.", unexpected_token.lexeme, unexpected_token.line),
-            Some(SourceLocation::new(unexpected_token.line, unexpected_token.column)),
+            Some(SourceLocation::new(unexpected_token.line, unexpected_token.column, 0)),
         ))
     }
 
@@ -888,7 +888,7 @@ impl Parser {
             Err(Error::syntax(
                 ErrorCode::P0002, // Expected token
                 message.to_string(),
-                Some(SourceLocation::new(peeked_token.line, peeked_token.column)),
+                Some(SourceLocation::new(peeked_token.line, peeked_token.column, 0)),
             ))
         }
     }
