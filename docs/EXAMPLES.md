@@ -14,12 +14,6 @@ let x: int = 10;
 let& y: float = 3.14;
 let name: string = "Lowland";
 let is_valid: bool = true;
-
-// Type inference
-let a = 42;        // int
-let b = 3.14;      // float
-let c = "Hello";   // string
-let d = true;      // bool
 ```
 
 ### Control Flow
