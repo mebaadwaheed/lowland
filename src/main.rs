@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use lowland::interpreter::Interpreter;
+use lowland::init::init_project;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -22,13 +23,19 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Start an interactive REPL
-    Start,
     /// Build a Lowland program
     Build {
         /// The script file to build
         #[arg(value_name = "FILE")]
         file: PathBuf,
+    },
+    /// Start an interactive REPL
+    Start,
+    /// Initialize a new Lowland project
+    Init {
+        /// Project name (optional)
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
     },
 }
 
@@ -46,6 +53,10 @@ fn main() {
         }
         Some(Commands::Start) => {
             start_repl(&mut interpreter);
+        }
+        Some(Commands::Init { name }) => {
+            let project_name = name.clone().unwrap_or_else(|| "my-lowland-app".to_string());
+            init_project(&project_name);
         }
         None => {
             start_repl(&mut interpreter);
@@ -74,7 +85,7 @@ fn run_file(file_path_buf: &PathBuf, interpreter: &mut Interpreter) {
 
     println!("Executing file: {}", file_path_buf.display());
     match interpreter.interpret_file(file_path_str) {
-                Ok(_) => {}
+        Ok(_) => {}
         Err(err) => {
             eprintln!("{} {}", "Error:".red().bold(), err);
         }

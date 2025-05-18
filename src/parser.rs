@@ -140,18 +140,9 @@ impl Parser {
 
         let name_token = self.consume(TokenType::Identifier, "Expect variable name.")?.clone();
         
-        let var_type = if self.match_token(TokenType::Colon) {
-            self.parse_type()?
-        } else {
-            // Type inference could be an option here, or make type annotation mandatory
-            // For now, let's make it mandatory as per original design
-            let err_loc_token = self.peek();
-            return Err(Error::syntax(
-                ErrorCode::P0006, // Expected type annotation
-                "Expect ':' and type annotation after variable name.".to_string(),
-                Some(SourceLocation::new(err_loc_token.line, err_loc_token.column, 0)),
-            ));
-        };
+        // Make type annotation mandatory
+        self.consume(TokenType::Colon, "Expect ':' and type annotation after variable name.")?;
+        let var_type = self.parse_type()?;
         
         let initializer = if self.match_token(TokenType::Equal) {
             Some(self.expression()?)
@@ -631,23 +622,35 @@ impl Parser {
         while self.match_tokens(&[TokenType::Plus, TokenType::Minus]) {
             let operator = self.previous().clone();
             let right = self.factor()?;
-            let loc = SourceLocation::new(operator.line, operator.column, 0);
+            let loc = SourceLocation::new(operator.line, operator.column, 0); 
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
-
         Ok(expr)
     }
 
     fn factor(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.unary()?;
+        let mut expr = self.exponentiation()?; // factor's operand is exponentiation
 
-        while self.match_tokens(&[TokenType::Star, TokenType::Slash, TokenType::StarStar, TokenType::Modulo]) {
+        while self.match_tokens(&[TokenType::Star, TokenType::Slash, TokenType::Modulo]) {
             let operator = self.previous().clone();
-            let right = self.unary()?;
+            let right = self.exponentiation()?; // factor's right operand is also exponentiation
             let loc = SourceLocation::new(operator.line, operator.column, 0);
             expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
         }
+        Ok(expr)
+    }
 
+    // New method for exponentiation (**) - Right associative
+    fn exponentiation(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.unary()?; // exponentiation's operand is unary
+
+        if self.match_token(TokenType::StarStar) { // StarStar is TokenType for **
+            let operator = self.previous().clone();
+            // For right-associativity, the right operand is parsed by exponentiation recursively.
+            let right = self.exponentiation()?;
+            let loc = SourceLocation::new(operator.line, operator.column, 0);
+            expr = Expr::new(ExprKind::Binary(Box::new(expr), operator, Box::new(right)), loc);
+        }
         Ok(expr)
     }
 

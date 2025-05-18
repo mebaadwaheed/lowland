@@ -1,5 +1,6 @@
 use std::fmt;
-use thiserror::Error;
+use crate::value::Value;
+use colored::Colorize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -116,33 +117,19 @@ impl fmt::Display for ErrorDetails {
 }
 
 
-#[derive(Error, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum Error {
-    #[error("{0}")]
     SyntaxError(ErrorDetails),
-
-    #[error("{0}")]
     TypeError(ErrorDetails),
-
-    #[error("{0}")]
     RuntimeError(ErrorDetails),
-
-    #[error("{0}")]
     IoError(ErrorDetails),
-
-    #[error("{0}")]
     UndefinedError(ErrorDetails), // Kept if distinct from general RuntimeError for undefined vars
 
     // Control flow "errors" should ideally not use ErrorDetails if they don't represent actual faults
     // For now, keeping them simple. We might refactor how control flow is handled later.
-    #[error("Break")] // No ErrorDetails needed
     BreakControlFlow,
-
-    #[error("Continue")] // No ErrorDetails needed
     ContinueControlFlow,
-
-    #[error("Return: {0:?}")] // This needs special handling for the return value.
-    ReturnControlFlow(Box<crate::value::Value>), // Assuming Value is in crate::value and needs to be boxed
+    ReturnControlFlow(Box<Value>), // Assuming Value is in crate::value and needs to be boxed
 }
 
 // Helper constructors (optional, but can be convenient)
@@ -178,3 +165,152 @@ impl Error {
 //     "Unexpected end of file".to_string(),
 //     Some(SourceLocation::new(line, col))
 // ) 
+
+impl Error {
+    pub fn get_location(&self) -> Option<&SourceLocation> {
+        match self {
+            Error::SyntaxError(details) => details.location.as_ref(),
+            Error::TypeError(details) => details.location.as_ref(),
+            Error::RuntimeError(details) => details.location.as_ref(),
+            Error::IoError(details) => details.location.as_ref(),
+            Error::UndefinedError(details) => details.location.as_ref(),
+            Error::ReturnControlFlow(_) => None,
+            Error::BreakControlFlow => None,
+            Error::ContinueControlFlow => None,
+        }
+    }
+
+    pub fn get_message(&self) -> &str {
+        match self {
+            Error::SyntaxError(details) => &details.message,
+            Error::TypeError(details) => &details.message,
+            Error::RuntimeError(details) => &details.message,
+            Error::IoError(details) => &details.message,
+            Error::UndefinedError(details) => &details.message,
+            Error::ReturnControlFlow(_) => "Return statement outside of function",
+            Error::BreakControlFlow => "Break statement outside of loop",
+            Error::ContinueControlFlow => "Continue statement outside of loop",
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::SyntaxError(details) => {
+                if let Some(loc) = details.location.as_ref() {
+                    write!(
+                        f,
+                        "{} [{}] at line {}, column {}: {}",
+                        "Syntax Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        loc.line,
+                        loc.column,
+                        details.message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} [{}]: {}",
+                        "Syntax Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        details.message
+                    )
+                }
+            }
+            Error::TypeError(details) => {
+                if let Some(loc) = details.location.as_ref() {
+                    write!(
+                        f,
+                        "{} [{}] at line {}, column {}: {}",
+                        "Type Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        loc.line,
+                        loc.column,
+                        details.message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} [{}]: {}",
+                        "Type Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        details.message
+                    )
+                }
+            }
+            Error::RuntimeError(details) => {
+                if let Some(loc) = details.location.as_ref() {
+                    write!(
+                        f,
+                        "{} [{}] at line {}, column {}: {}",
+                        "Runtime Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        loc.line,
+                        loc.column,
+                        details.message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} [{}]: {}",
+                        "Runtime Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        details.message
+                    )
+                }
+            }
+            Error::IoError(details) => {
+                if let Some(loc) = details.location.as_ref() {
+                    write!(
+                        f,
+                        "{} [{}] at line {}, column {}: {}",
+                        "I/O Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        loc.line,
+                        loc.column,
+                        details.message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} [{}]: {}",
+                        "I/O Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        details.message
+                    )
+                }
+            }
+            Error::UndefinedError(details) => {
+                if let Some(loc) = details.location.as_ref() {
+                    write!(
+                        f,
+                        "{} [{}] at line {}, column {}: {}",
+                        "Undefined Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        loc.line,
+                        loc.column,
+                        details.message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} [{}]: {}",
+                        "Undefined Error".red().bold(),
+                        format!("{:?}", details.code).yellow(),
+                        details.message
+                    )
+                }
+            }
+            Error::ReturnControlFlow(_) => {
+                write!(f, "{}: Return statement outside of function", "Control Flow Error".red().bold())
+            }
+            Error::BreakControlFlow => {
+                write!(f, "{}: Break statement outside of loop", "Control Flow Error".red().bold())
+            }
+            Error::ContinueControlFlow => {
+                write!(f, "{}: Continue statement outside of loop", "Control Flow Error".red().bold())
+            }
+        }
+    }
+} 

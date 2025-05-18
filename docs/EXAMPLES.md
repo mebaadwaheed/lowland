@@ -237,3 +237,20 @@ func main() {
 
 main();
 ``` 
+
+### Common Mistakes:
+```lowland
+export func power(base: int, exponent: int): int {
+    let result: int = 1;
+    let i: int = 0;
+    
+    while (i < exponent) {
+        result = result * base;
+        i = i + 1;
+    }
+    
+    return result;
+} // A function being exported with the param "base"
+// And then you go to your main file:
+let base: int = 2; // This gives  the Runtime Error R0002, you CANNOT give exported func param names to variables.
+```

@@ -7,6 +7,7 @@ pub mod token;
 pub mod types;
 pub mod value;
 pub mod gc;
+pub mod init;
 
 // Re-export commonly used items
 pub use error::Error;

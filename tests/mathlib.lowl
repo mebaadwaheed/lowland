@@ -1,0 +1,38 @@
+// Math library with exported functions
+
+// Square function - exported
+export func square(n: int): int {
+    return n * n;
+}
+
+// Cube function - exported
+export func cube(n: int): int {
+    return n * n * n;
+}
+
+// Power function - exported
+export func power(base: int, exponent: int): int {
+    let result: int = 1;
+    let i: int = 0;
+    
+    while (i < exponent) {
+        result = result * base;
+        i = i + 1;
+    }
+    
+    return result;
+}
+
+// Factorial function - exported
+export func factorial(n: int): int {
+    if (n <= 1) {
+        return 1;
+    } else {
+        return n * factorial(n - 1);
+    }
+}
+
+// Helper function - not exported
+func isEven(n: int): bool { 
+    return n % 2 == 0;
+} 

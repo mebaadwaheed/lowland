@@ -1,0 +1,30 @@
+// Test file to demonstrate importing from a module
+
+// Import all exported functions from mathlib.lowl
+including "mathlib.lowl";
+
+// Alternatively, selective import:
+// including [square, cube] from "mathlib.lowl";
+
+// Test the square function
+let num: int = 5;
+let squared: int = square(num);
+println(num, "squared is", squared);
+
+// Test the cube function
+let cubed: int = cube(num);
+println(num, "cubed is", cubed);
+
+// Test the power function
+let base: int = 2;
+let exp: int = 8;
+let powered: int = power(base, exp);
+println(base, "to the power of", exp, "is", powered);
+
+// Test the factorial function
+let n: int = 6;
+let fact: int = factorial(n);
+println("Factorial of", n, "is", fact);
+
+// This should fail since isEven is not exported
+// let is_even: bool = isEven(4); 

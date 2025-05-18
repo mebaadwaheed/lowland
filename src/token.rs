@@ -31,6 +31,7 @@ pub enum TokenType {
     Plus,
     Minus,
     Star,
+    StarStar, // New token for exponentiation (**)
     Slash,
     Equal,
     EqualEqual,
@@ -47,7 +48,6 @@ pub enum TokenType {
     // New compound operators
     PlusPlus,    // ++
     MinusMinus,  // --
-    StarStar,    // **
     
     // Literals
     Identifier,

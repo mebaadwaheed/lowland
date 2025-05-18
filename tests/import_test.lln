@@ -4,7 +4,7 @@
 println("\n=== Testing Standard Library Imports ===");
 
 // Import specific functions
-including [std::math::sqrt, std::math::abs] from "standard";
+including [ std::math::sqrt, std::math::abs ] from "standard";
 println("sqrt(16) =", sqrt(16));
 println("abs(-10) =", abs(-10));
 

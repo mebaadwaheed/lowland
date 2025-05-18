@@ -10,7 +10,7 @@ use std::collections::{HashMap};
 use std::fs;
 use std::path::{PathBuf};
 use std::rc::Rc;
-use std::cell::{RefCell, Ref, RefMut};
+use std::cell::RefCell;
 use std::io::{self, Write};
 
 /// Represents a variable with its type, value, and mutability
@@ -60,13 +60,18 @@ pub struct Interpreter {
 impl Interpreter {
     /// Creates a new interpreter instance with empty environment and function tables
     pub fn new() -> Self {
-        Interpreter {
+        let mut interpreter = Interpreter {
             environment: HashMap::new(),
             functions: HashMap::new(),
             current_file_path: None,
             module_cache: Rc::new(RefCell::new(HashMap::new())),
             imported_std_symbols: HashMap::new(),
-        }
+        };
+        
+        // Initialize standard library symbols
+        interpreter.init_std_library();
+        
+        interpreter
     }
 
     /// Main entry point for interpreting a file
@@ -223,8 +228,6 @@ impl Interpreter {
     /// - Print statements
     /// - Import statements
     fn execute_statement(&mut self, stmt_node: &Stmt) -> Result<Value, Error> {
-        let stmt_loc = stmt_node.loc.clone(); // Location for error reporting
-
         match &stmt_node.kind {
             // Handle expression statements (e.g., function calls, assignments)
             StmtKind::Expression(expr) => self.evaluate_expression(expr),
@@ -271,16 +274,9 @@ impl Interpreter {
                     None => Value::Null, // Default to null if no initializer
                 };
                 
-                // Type checking
-                let value_type = value.get_type();
-                if value != Value::Null && !var_type.is_compatible_with(&value_type) {
-                    return Err(Error::type_error(
-                        ErrorCode::T0001, // Type mismatch
-                        format!("Cannot initialize variable '{}' of type {} with value of type {}.", 
-                            name_token.lexeme, var_type, value_type),
-                        Some(initializer.as_ref().map_or_else(|| stmt_loc, |e| e.loc.clone())),
-                    ));
-                }
+                // Type checking using the helper method
+                let loc = initializer.as_ref().map_or_else(|| stmt_node.loc.clone(), |e| e.loc.clone());
+                self.check_type_compatibility(var_type, &value, Some(loc))?;
                 
                 // Store variable in environment
                 self.environment.insert(
@@ -338,15 +334,13 @@ impl Interpreter {
                         self.execute_statement(then_branch)
                     } else {
                         // Try elif branches
-                        let mut executed_elif = false;
                         for (elif_cond_expr, elif_branch_stmt) in elif_branches {
                             let elif_cond_value = self.evaluate_expression(elif_cond_expr)?;
                             let elif_cond_loc = elif_cond_expr.loc.clone();
                             if let Value::Bool(elif_bool) = elif_cond_value {
                                 if elif_bool {
-                                    executed_elif = true;
-                                    self.execute_statement(elif_branch_stmt)?;
-                                    break;
+                                    // Execute elif branch directly and return
+                                    return self.execute_statement(elif_branch_stmt);
                                 }
                             } else {
                                 return Err(Error::type_error(
@@ -357,7 +351,7 @@ impl Interpreter {
                             }
                         }
                         // Execute else branch if no elif conditions were true
-                        if !executed_elif && else_branch.is_some() {
+                        if else_branch.is_some() {
                             self.execute_statement(else_branch.as_ref().unwrap())
                         } else {
                             Ok(Value::Null)
@@ -371,12 +365,15 @@ impl Interpreter {
                     ))
                 }
             },
-            StmtKind::Function { name_token, parameters, return_type, body, is_exported } => {
-                // Evaluate function body
-                let body = body.clone();
-                let result = self.execute_statement(&body)?;
-                Ok(result)
+            
+            // Handle function definitions
+            StmtKind::Function { name_token: _, parameters: _, return_type: _, body: _, is_exported: _ } => {
+                // We don't actually execute anything here, as functions are registered during program execution
+                // Just return null as the result of defining a function
+                Ok(Value::Null)
             },
+            
+            // Handle return statement
             StmtKind::Return(return_value) => {
                 // Evaluate return expression if present
                 let return_value = match return_value {
@@ -386,6 +383,7 @@ impl Interpreter {
                 Err(Error::ReturnControlFlow(Box::new(return_value)))
             },
 
+            // Handle while loops
             StmtKind::While { condition, body } => {
                 // Evaluate condition and execute body in a loop
                 loop {
@@ -418,6 +416,7 @@ impl Interpreter {
                 Ok(Value::Null)
             },
 
+            // Handle for loops
             StmtKind::For { initializer, condition, increment, body } => {
                 // Execute initializer if present
                 if let Some(init) = initializer {
@@ -466,11 +465,140 @@ impl Interpreter {
 
             // Handle including statement
             StmtKind::Including { path_token, path_val, imports } => {
-                // TODO: Implement file inclusion logic
+                // Resolve file path based on current file's directory
+                let path_to_include = if let Some(current_path) = &self.current_file_path {
+                    // Get parent directory of current file
+                    let parent_dir = current_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    parent_dir.join(&path_val)
+                } else {
+                    // If no current file path (e.g., REPL), use path as is
+                    PathBuf::from(&path_val)
+                };
+
+                // Try to canonicalize the path
+                let canonical_path = match fs::canonicalize(&path_to_include) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::io(
+                        ErrorCode::I0001,
+                        format!("Error resolving path '{}': {}", path_val, e),
+                        Some(SourceLocation::new(path_token.line, path_token.column, 0)),
+                    )),
+                };
+
+                // Check if module is already in cache
+                let cached_exports = {
+                    let cache = self.module_cache.borrow();
+                    cache.get(&canonical_path).cloned()
+                };
+
+                let module_exports = if let Some(exports) = cached_exports {
+                    // Use cached exports
+                    exports
+                } else {
+                    // Read and interpret the file
+                    let source = match fs::read_to_string(&canonical_path) {
+                        Ok(content) => content,
+                        Err(e) => return Err(Error::io(
+                            ErrorCode::I0003,
+                            format!("Error reading file '{}': {}", canonical_path.display(), e),
+                            Some(SourceLocation::new(path_token.line, path_token.column, 0)),
+                        )),
+                    };
+
+                    // Save current state
+                    let old_path = self.current_file_path.clone();
+                    let old_env = self.environment.clone();
+                    let old_functions = self.functions.clone();
+
+                    // Set up new state for included file
+                    self.current_file_path = Some(canonical_path.clone());
+                    self.environment.clear();
+                    self.functions.clear();
+
+                    // Parse and execute the included file
+                    let mut lexer = Lexer::new(&source);
+                    let tokens = match lexer.scan_tokens() {
+                        Ok(tokens) => tokens,
+                        Err(e) => {
+                            // Restore state on error
+                            self.current_file_path = old_path;
+                            self.environment = old_env;
+                            self.functions = old_functions;
+                            return Err(e);
+                        },
+                    };
+
+                    let mut parser = Parser::new(tokens);
+                    let program = match parser.parse() {
+                        Ok(program) => program,
+                        Err(e) => {
+                            // Restore state on error
+                            self.current_file_path = old_path;
+                            self.environment = old_env;
+                            self.functions = old_functions;
+                            return Err(e);
+                        },
+                    };
+
+                    // Execute the included program
+                    let (_, defined_functions) = match self.execute_program(&program) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            // Restore state on error
+                            self.current_file_path = old_path;
+                            self.environment = old_env;
+                            self.functions = old_functions;
+                            return Err(e);
+                        },
+                    };
+
+                    // Extract exported functions
+                    let exports: Vec<Function> = defined_functions.into_iter()
+                        .filter(|f| f.is_exported)
+                        .collect();
+
+                    // Cache the exports
+                    {
+                        let mut cache = self.module_cache.borrow_mut();
+                        cache.insert(canonical_path.clone(), exports.clone());
+                    }
+
+                    // Restore previous state
+                    self.current_file_path = old_path;
+                    self.environment = old_env;
+                    self.functions = old_functions;
+
+                    exports
+                };
+
+                // Process imported functions based on imports parameter
+                match &imports {
+                    Some(import_list) => {
+                        // Selective import of specified functions
+                        for import_name in import_list {
+                            let found = module_exports.iter().find(|f| f.name == *import_name);
+                            
+                            if let Some(function) = found {
+                                self.functions.insert(function.name.clone(), function.clone());
+                            } else {
+                                return Err(Error::runtime(
+                                    ErrorCode::R0004,
+                                    format!("Exported function '{}' not found in '{}'", import_name, path_val),
+                                    Some(SourceLocation::new(path_token.line, path_token.column, 0)),
+                                ));
+                            }
+                        }
+                    },
+                    None => {
+                        // Import all exported functions
+                        for function in module_exports {
+                            self.functions.insert(function.name.clone(), function.clone());
+                        }
+                    }
+                }
+
                 Ok(Value::Null)
             },
-
-            // ... rest of statement handling ...
         }
     }
 
@@ -483,8 +611,6 @@ impl Interpreter {
     /// - Function calls
     /// - Object/List operations
     fn evaluate_expression(&mut self, expr_node: &Expr) -> Result<Value, Error> {
-        let _expr_loc = expr_node.loc.clone(); // Location for error reporting
-
         match &expr_node.kind {
             // Handle literal values
             ExprKind::Literal(value) => Ok(value.clone()),
@@ -557,6 +683,7 @@ impl Interpreter {
                     TokenType::Less => self.compare_values(&left_val, &right_val, |a, b| a < b, op_loc),
                     TokenType::LessEqual => self.compare_values(&left_val, &right_val, |a, b| a <= b, op_loc),
                     TokenType::Modulo => self.modulo_values(&left_val, &right_val, op_loc),
+                    TokenType::StarStar => self.power_values(&left_val, &right_val, op_loc),
                     _ => Err(Error::syntax(
                         ErrorCode::P0000,
                         format!("Invalid binary operator '{}'.", operator_token.lexeme),
@@ -604,22 +731,41 @@ impl Interpreter {
 
             // Handle assignments
             ExprKind::Assign { name_token, value } => {
-                let value = self.evaluate_expression(value)?;
-                if let Some(var_data) = self.environment.get_mut(&name_token.lexeme) {
-                    if !var_data.is_mutable {
+                let new_value = self.evaluate_expression(value)?;
+                let loc = SourceLocation::new(name_token.line, name_token.column, name_token.lexeme.len());
+                
+                // Get variable information for validation
+                if let Some(var) = self.environment.get(&name_token.lexeme) {
+                    // Check if variable is mutable
+                    if !var.is_mutable {
                         return Err(Error::runtime(
                             ErrorCode::R0002,
                             format!("Cannot assign to immutable variable '{}'.", name_token.lexeme),
-                            Some(SourceLocation::new(name_token.line, name_token.column, name_token.lexeme.len())),
+                            Some(loc.clone()),
                         ));
                     }
-                    var_data.value = value.clone();
-                    Ok(value)
+                    
+                    // Check if types are compatible
+                    let var_type = var.var_type.clone();
+                    self.check_type_compatibility(&var_type, &new_value, Some(loc.clone()))?;
+                    
+                    // Perform the assignment (retrieve mutable reference now)
+                    if let Some(var_data) = self.environment.get_mut(&name_token.lexeme) {
+                        var_data.value = new_value.clone();
+                        Ok(new_value)
+                    } else {
+                        // This should not happen since we already checked existence
+                        Err(Error::runtime(
+                            ErrorCode::R0001,
+                            format!("Undefined variable '{}'.", name_token.lexeme),
+                            Some(loc),
+                        ))
+                    }
                 } else {
                     Err(Error::runtime(
                         ErrorCode::R0001,
                         format!("Undefined variable '{}'.", name_token.lexeme),
-                        Some(SourceLocation::new(name_token.line, name_token.column, name_token.lexeme.len())),
+                        Some(loc),
                     ))
                 }
             },
@@ -662,10 +808,22 @@ impl Interpreter {
             // Handle list literals
             ExprKind::ListLiteral(elements) => {
                 let mut list_elements = Vec::with_capacity(elements.len());
+                
+                // Infer list element type from first non-null element
+                let mut inferred_type = Type::Unknown;
+                
                 for element in elements {
-                    list_elements.push(self.evaluate_expression(element)?);
+                    let value = self.evaluate_expression(element)?;
+                    
+                    // Try to infer element type from first non-null value
+                    if inferred_type == Type::Unknown && value != Value::Null {
+                        inferred_type = value.get_type();
+                    }
+                    
+                    list_elements.push(value);
                 }
-                Ok(Value::List(ListRef::from_vec(list_elements, Type::Unknown)))
+                
+                Ok(Value::List(ListRef::from_vec(list_elements, inferred_type)))
             },
 
             // Handle method calls
@@ -680,12 +838,14 @@ impl Interpreter {
 
             // Handle object literals
             ExprKind::ObjectLiteral { properties } => {
-                let mut obj_properties = HashMap::new();
+                let obj = ObjectRef::new();
+                let mut obj_properties = obj.properties.borrow_mut();
                 for (key_token, value_expr) in properties {
                     let value = self.evaluate_expression(value_expr)?;
                     obj_properties.insert(key_token.lexeme.clone(), value);
                 }
-                Ok(Value::Object(ObjectRef::new()))
+                drop(obj_properties); // Release the borrow before returning
+                Ok(Value::Object(obj))
             },
 
             // Handle property access
@@ -824,6 +984,28 @@ impl Interpreter {
         }
     }
 
+    fn power_values(&mut self, base: &Value, exponent: &Value, loc: SourceLocation) -> Result<Value, Error> {
+        match (base, exponent) {
+            (Value::Int(b), Value::Int(e)) => {
+                if *e < 0 {
+                    // Negative exponent, result is float
+                    Ok(Value::Float((*b as f64).powi(*e as i32)))
+                } else {
+                    // Positive integer exponent
+                    Ok(Value::Int(b.pow(*e as u32)))
+                }
+            }
+            (Value::Float(b), Value::Float(e)) => Ok(Value::Float(b.powf(*e))),
+            (Value::Int(b), Value::Float(e)) => Ok(Value::Float((*b as f64).powf(*e))),
+            (Value::Float(b), Value::Int(e)) => Ok(Value::Float(b.powi(*e as i32))),
+            _ => Err(Error::type_error(
+                ErrorCode::T0002,
+                format!("Cannot perform exponentiation on values of types {} and {}.", base.get_type(), exponent.get_type()),
+                Some(loc),
+            )),
+        }
+    }
+
     fn compare_values<F>(&mut self, left: &Value, right: &Value, compare_fn: F, loc: SourceLocation) -> Result<Value, Error>
     where
         F: FnOnce(f64, f64) -> bool,
@@ -843,7 +1025,65 @@ impl Interpreter {
 
     // Helper methods for function and method calls
     fn call_function(&mut self, name: &str, args: Vec<Value>, call_token: &Token) -> Result<Value, Error> {
-        if let Some(func) = self.functions.get(name) {
+        // First resolve the name in case it's a qualified standard library function
+        let resolved_name = self.resolve_std_function(name);
+        
+        // Check for built-in functions first
+        if resolved_name == "inputln" {
+            if !args.is_empty() {
+                return Err(Error::runtime(
+                    ErrorCode::R0005,
+                    format!("Function \'inputln\' expects 0 arguments, got {}.", args.len()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                ));
+            }
+            // Optionally print a prompt if you had one, e.g., by checking args
+            // For now, assume no prompt.
+            // Flush stdout to ensure any previous prints are visible before input
+            io::stdout().flush().map_err(|e| Error::io(
+                ErrorCode::I0002, // Example: Using I0002 for input/output flush error
+                format!("Failed to flush stdout: {}", e),
+                Some(SourceLocation::new(call_token.line, call_token.column, 0))
+            ))?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).map_err(|e| Error::io(
+                ErrorCode::I0001, // Example: Using I0001 for read line error
+                format!("Failed to read line: {}", e),
+                Some(SourceLocation::new(call_token.line, call_token.column, 0))
+            ))?;
+            // Trim newline characters from the input
+            Ok(Value::String(input.trim_end_matches(|c| c == '\r' || c == '\n').to_string()))
+        } else if name == "toInt" {
+            if args.len() != 1 {
+                return Err(Error::runtime(
+                    ErrorCode::R0005,
+                    format!("Function \'toInt\' expects 1 argument, got {}.", args.len()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                ));
+            }
+            let arg_val = &args[0];
+            match arg_val {
+                Value::Int(i) => Ok(Value::Int(*i)), // Already an int
+                Value::Float(f) => Ok(Value::Int(*f as i64)), // Truncate float
+                Value::String(s) => {
+                    match s.parse::<i64>() {
+                        Ok(i) => Ok(Value::Int(i)),
+                        Err(_) => Err(Error::type_error(
+                            ErrorCode::T0004, // Invalid string to int conversion
+                            format!("Cannot convert string \"{}\" to Int.", s),
+                            Some(SourceLocation::new(call_token.line, call_token.column, 0)), // Ideally, location of the argument
+                        )),
+                    }
+                },
+                Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+                _ => Err(Error::type_error(
+                    ErrorCode::T0002,
+                    format!("Cannot convert value of type {} to Int.", arg_val.get_type()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)), // Ideally, location of the argument
+                )),
+            }
+        } else if let Some(func) = self.functions.get(name).cloned() {  // Clone the function to avoid borrowing issues
             // Check argument count
             if args.len() != func.parameters.len() {
                 return Err(Error::runtime(
@@ -864,16 +1104,42 @@ impl Interpreter {
                     Variable {
                         var_type: param.param_type.clone(),
                         value: arg,
-                        is_mutable: false,
+                        is_mutable: false, // Function parameters are immutable by default
                     },
                 );
             }
 
             // Execute function body
             let body = func.body.clone();
-            let result = self.execute_statement(&body)?;
-            self.environment = old_env;
-            Ok(result)
+            let execution_result = self.execute_statement(&body);
+            self.environment = old_env; // Restore environment regardless of how body finished
+
+            match execution_result {
+                Ok(value_if_no_explicit_return) => {
+                    // If the function didn't explicitly return, this is the value of the last statement.
+                    // Check the type against the function's return type
+                    self.check_type_compatibility(
+                        &func.return_type,
+                        &value_if_no_explicit_return,
+                        Some(SourceLocation::new(call_token.line, call_token.column, call_token.lexeme.len()))
+                    )?;
+                    Ok(value_if_no_explicit_return)
+                }
+                Err(Error::ReturnControlFlow(boxed_value)) => {
+                    // Explicit return from the function
+                    // Check the type against the function's return type
+                    self.check_type_compatibility(
+                        &func.return_type,
+                        &boxed_value,
+                        Some(SourceLocation::new(call_token.line, call_token.column, call_token.lexeme.len()))
+                    )?;
+                    Ok(*boxed_value)
+                }
+                Err(other_error) => {
+                    // Any other error should propagate
+                    Err(other_error)
+                }
+            }
         } else {
             Err(Error::runtime(
                 ErrorCode::R0004,
@@ -901,7 +1167,7 @@ impl Interpreter {
     }
 
     /// Helper method to handle object method calls
-    fn handle_object_method(&mut self, obj_ref: ObjectRef, method_name: &str, args: Vec<Value>, method_token: &Token) -> Result<Value, Error> {
+    fn handle_object_method(&mut self, _obj_ref: ObjectRef, _method_name: &str, _args: Vec<Value>, method_token: &Token) -> Result<Value, Error> {
         let location = Self::token_to_location(method_token);
         // TODO: Implement object methods
         Err(self.create_error(
@@ -1138,5 +1404,72 @@ impl Interpreter {
         }
         elements[idx as usize] = value_to_set.clone();
         Ok(Value::Null)
+    }
+
+    /// Check if a value can be assigned to a variable of a specific type
+    fn check_type_compatibility(&self, var_type: &Type, value: &Value, location: Option<SourceLocation>) -> Result<(), Error> {
+        let value_type = value.get_type();
+        
+        // Null can be assigned to any type
+        if *value == Value::Null {
+            return Ok(());
+        }
+        
+        // Check if the types are compatible
+        if !var_type.is_compatible_with(&value_type) {
+            return Err(Error::type_error(
+                ErrorCode::T0001,
+                format!("Cannot assign value of type {} to variable of type {}.", 
+                    value_type, var_type),
+                location,
+            ));
+        }
+        
+        Ok(())
+    }
+
+    /// Get the type of a variable from the environment
+    #[allow(dead_code)]
+    fn get_variable_type(&self, var_name: &str) -> Option<Type> {
+        self.environment.get(var_name).map(|var| var.var_type.clone())
+    }
+
+    /// Initialize standard library symbols
+    fn init_std_library(&mut self) {
+        // Register standard math functions
+        self.imported_std_symbols.insert("math::sqrt".to_string(), "sqrt".to_string());
+        self.imported_std_symbols.insert("math::abs".to_string(), "abs".to_string());
+        self.imported_std_symbols.insert("math::pow".to_string(), "pow".to_string());
+        
+        // Register standard conversion functions
+        self.imported_std_symbols.insert("std::toString".to_string(), "toString".to_string());
+        self.imported_std_symbols.insert("std::toInt".to_string(), "toInt".to_string());
+        self.imported_std_symbols.insert("std::toFloat".to_string(), "toFloat".to_string());
+        self.imported_std_symbols.insert("std::toBool".to_string(), "toBool".to_string());
+    }
+    
+    /// Resolve a possibly qualified function name using the standard library mapping
+    fn resolve_std_function(&self, name: &str) -> String {
+        // Check if it's a qualified name that maps to a standard library function
+        if let Some(std_func) = self.imported_std_symbols.get(name) {
+            return std_func.clone();
+        }
+        
+        // Return the name unchanged if not found in the mapping
+        name.to_string()
+    }
+
+    /// Get the expected type of an expression before evaluating it
+    /// This is used for type checking without executing the expression
+    #[allow(dead_code)]
+    fn get_expression_type(&self, expr: &Expr) -> Option<Type> {
+        match &expr.kind {
+            ExprKind::Literal(value) => Some(value.get_type()),
+            ExprKind::Variable(name_token) => self.get_variable_type(&name_token.lexeme),
+            ExprKind::Grouping(inner_expr) => self.get_expression_type(inner_expr),
+            // For more complex expressions, we would need a type system
+            // with type inference rules for operations
+            _ => None,
+        }
     }
 }
