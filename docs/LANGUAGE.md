@@ -63,13 +63,6 @@ let x: int = 10;
 let& y: string = "Hello";
 ```
 
-### Type Inference
-```lowland
-let x = 10;        // Inferred as int
-let y = 3.14;      // Inferred as float
-let z = "Hello";   // Inferred as string
-```
-
 ## Control Flow
 
 ### If Statements
