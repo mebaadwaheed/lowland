@@ -33,7 +33,7 @@ let& y: string = "Hello"; // Mutable variable
 
 // Print statements
 println("Hello, World!");
-print("No newline");
+println("No newline");
 
 // Expression statements
 x = x + 1;
