@@ -1,6 +1,15 @@
 # Lowland Programming Language
 
-Lowland is a statically-typed, interpreted programming language designed for performance and ease of use.
+## Lowland is a statically-typed, interpreted programming language designed for performance and ease of use.
+
+## Why use LowLand?
+- 🔥🔥 Lowland is relatively easy to learn
+- ✨✨ Interpreter runs in the background
+- ⚡⚡ Rapid development
+- 🎯🎯 Syntax familiarity
+- 🚀🚀 Modern
+
+
 ### if you contribute the cat will be happy 😺
 ### also download the vscode extension or your pc will blow up
 
