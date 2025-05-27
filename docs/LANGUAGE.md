@@ -147,7 +147,7 @@ including "localfile.lln";
 
 ## Standard Library
 
-### Math Module (std::math)
+### Math Module (std::math) [ NEEDS FIXING ]
 ```lowland
 // Available functions
 math.sqrt(x)      // Square root
@@ -160,14 +160,6 @@ let x = math.sqrt(16);    // 4.0
 let y = math.abs(-10);    // 10
 let z = math.pow(2, 3);   // 8
 let w = math.floor(3.7);  // 3.0
-```
-
-### Terminal Module (std::terminal)
-```lowland
-// Input/Output
-inputln()           // Read a line from stdin
-println(x, y, z)    // Print values with newline
-print(x, y, z)      // Print values without newline
 ```
 
 ### Type Conversion

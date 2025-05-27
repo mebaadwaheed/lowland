@@ -85,6 +85,7 @@ pub enum TokenType {
     Including,  // Added for including files
     Export,     // Added for exporting functions
     From,       // Added for selective including
+    Struct,
     PrintlnBang, // New for println!
     
     // Special tokens

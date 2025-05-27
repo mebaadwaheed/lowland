@@ -9,18 +9,18 @@ pub fn init_project(project_name: &str) {
     let main_file_path = format!("{}/main.lln", src_path);
 
     if fs::create_dir_all(&src_path).is_ok() {
-        fs::write(&main_file_path, "// Entry point\n").unwrap();
+        fs::write(&main_file_path, "// Entry point\nfunc Main() {\n    println(\"hello world\");\n}\nMain();").unwrap();
         println!("✅ Created {}", main_file_path);
     } else {
         eprintln!("❌ Failed to create project structure.");
         return;
     }
 
-    print!("Would you like to use Ninjar V1.9.6 for GUI support? (Y/N): ");
+    print!("Would you like to use Ninjar V1.9.6 for executable support? (Y/N): ");
     io::stdout().flush().unwrap();
 
     let mut response = String::new();
-    io::stdin().read_line(&mut response).unwrap();
+    io::stdin().read_line(&mut response).unwrap();  
 
     if response.trim().eq_ignore_ascii_case("y") {
         println!("📦 Cloning Ninjar...");

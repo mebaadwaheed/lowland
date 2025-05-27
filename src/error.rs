@@ -50,7 +50,7 @@ pub enum ErrorCode {
     R0007, // Modulo by zero
     R0008, // Method not found on type
     R0009, // Operation on empty collection (e.g., pop from empty list)
-    R0010, // List index out of bounds (specific for list methods, can use R0003 if preferred)
+    R0010, // List index out of bounds (specific for list methods, can use R0003 if preferred
 
     // IO Errors (Ixxxx)
     I0001, // File not found

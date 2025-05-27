@@ -16,6 +16,7 @@ pub enum Value {
     Bool(bool),
     Object(ObjectRef),
     List(ListRef),
+    Struct(String, HashMap<String, Value>),
     StdFunctionLink(String),
     Null,
 }
@@ -56,6 +57,7 @@ impl Value {
             Value::Float(_) => Type::Float,
             Value::Bool(_) => Type::Bool,
             Value::Object(_) => Type::Object,
+            Value::Struct(name, _) => Type::Struct(name.clone()),
             Value::List(list_ref) => Type::List(Box::new(list_ref.element_type.borrow().clone())),
             Value::StdFunctionLink(_) => Type::Unknown,
             Value::Null => Type::Unknown,
@@ -80,6 +82,17 @@ impl Value {
                     }
                 }
                 format!("[{}]", content)
+            },
+            Value::Struct(name, fields) => {
+                let mut result = format!("{} {{ ", name);
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    result.push_str(&format!("{}: {}", k, v.to_string_value()?));
+                    if i < fields.len() - 1 {
+                        result.push_str(", ");
+                    }
+                }
+                result.push_str(" }");
+                result
             }
             Value::StdFunctionLink(name) => format!("<std_function: {}>", name),
             Value::Null => "null".to_string(),
@@ -117,7 +130,18 @@ impl Value {
                     }
                 }
                 format!("[{}]", content)
-            }
+            },
+            Value::Struct(name, fields) => {
+                let mut result = format!("{} {{ ", name);
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    result.push_str(&format!("{}: {}", k, v.to_raw_display_string()?));
+                    if i < fields.len() - 1 {
+                        result.push_str(", ");
+                    }
+                }
+                result.push_str(" }");
+                result
+            }   
             Value::StdFunctionLink(name) => format!("<std_function: {}>", name),
             Value::Null => "null".to_string(),
         })
@@ -129,7 +153,13 @@ impl fmt::Display for Value {
         match self {
             Value::String(s) => write!(formatter, "\\\"{}\\\"", s),
             Value::Int(i) => write!(formatter, "{}", i),
-            Value::Float(f_val) => write!(formatter, "{}", f_val),
+            Value::Float(f_val) => {
+                if f_val.fract() == 0.0 {
+                    write!(formatter, "{:.1}", f_val) // Forces 123.0 instead of 123
+                } else {
+                    write!(formatter, "{}", f_val)
+                }
+            }
             Value::Bool(b) => write!(formatter, "{}", b),
             Value::Object(o) => write!(formatter, "obj@{}", o.id),
             Value::List(l) => {
@@ -137,12 +167,24 @@ impl fmt::Display for Value {
                     .map(|e| e.to_string())
                     .collect();
                 write!(formatter, "[{}]", elements.join(", "))
+            },
+            Value::Struct(name, fields) => {
+                let mut result = format!("{} {{ ", name);
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    result.push_str(&format!("{}: {}", k, v));
+                    if i < fields.len() - 1 {
+                        result.push_str(", ");
+                    }
+                }
+                result.push_str(" }");
+                write!(formatter, "{}", result)
             }
             Value::StdFunctionLink(name) => write!(formatter, "<std_function: {}>", name),
             Value::Null => write!(formatter, "null"),
         }
     }
 }
+
 
 impl ObjectRef {
     pub fn new() -> Self {

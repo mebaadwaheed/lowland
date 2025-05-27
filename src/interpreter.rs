@@ -7,7 +7,7 @@ use crate::types::Type;
 use crate::value::{Value, ListRef, ObjectRef};
 use colored::Colorize;
 use std::collections::{HashMap};
-use std::fs;
+use std::{fs};
 use std::path::{PathBuf};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -37,6 +37,12 @@ struct Function {
     body: Box<Stmt>,
     /// Whether the function is exported from its module
     is_exported: bool,
+}
+
+#[derive(Clone, Debug)]
+struct StructDef {
+    name: String,
+    fields: HashMap<String, Type>
 }
 
 /// Interpreter for the Lowland language
@@ -1027,97 +1033,170 @@ impl Interpreter {
     fn call_function(&mut self, name: &str, args: Vec<Value>, call_token: &Token) -> Result<Value, Error> {
         // First resolve the name in case it's a qualified standard library function
         let resolved_name = self.resolve_std_function(name);
-        
+
         // Check for built-in functions first
         if resolved_name == "inputln" {
             if !args.is_empty() {
                 return Err(Error::runtime(
                     ErrorCode::R0005,
-                    format!("Function \'inputln\' expects 0 arguments, got {}.", args.len()),
+                    format!("Function 'inputln' expects 0 arguments, got {}.", args.len()),
                     Some(SourceLocation::new(call_token.line, call_token.column, 0)),
                 ));
             }
-            // Optionally print a prompt if you had one, e.g., by checking args
-            // For now, assume no prompt.
-            // Flush stdout to ensure any previous prints are visible before input
             io::stdout().flush().map_err(|e| Error::io(
-                ErrorCode::I0002, // Example: Using I0002 for input/output flush error
+                ErrorCode::I0002,
                 format!("Failed to flush stdout: {}", e),
                 Some(SourceLocation::new(call_token.line, call_token.column, 0))
             ))?;
 
             let mut input = String::new();
             io::stdin().read_line(&mut input).map_err(|e| Error::io(
-                ErrorCode::I0001, // Example: Using I0001 for read line error
+                ErrorCode::I0001,
                 format!("Failed to read line: {}", e),
                 Some(SourceLocation::new(call_token.line, call_token.column, 0))
             ))?;
-            // Trim newline characters from the input
             Ok(Value::String(input.trim_end_matches(|c| c == '\r' || c == '\n').to_string()))
-        } else if name == "toInt" {
+        } else if resolved_name == "toFloat" {
             if args.len() != 1 {
                 return Err(Error::runtime(
                     ErrorCode::R0005,
-                    format!("Function \'toInt\' expects 1 argument, got {}.", args.len()),
+                    format!("Function 'toFloat' expects 1 argument, got {}.", args.len()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                ));
+            }
+            let arg_val = &args[0];
+            match arg_val {
+                Value::Float(f) => Ok(Value::Float(*f)), // Already a float
+                Value::Int(i) => Ok(Value::Float(*i as f64)), // Convert Int to Float (e.g., 10 becomes 10.0)
+                Value::String(s) => {
+                    match s.parse::<f64>() {
+                        Ok(f_val) => Ok(Value::Float(f_val)),
+                        Err(_) => Err(Error::type_error(
+                            ErrorCode::T0004,
+                            format!("Cannot convert string \"{}\" to Float.", s),
+                            Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                        )),
+                    }
+                },
+                Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                _ => Err(Error::type_error(
+                    ErrorCode::T0002,
+                    format!("Cannot convert value of type {} to Float.", arg_val.get_type()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                )),
+            }
+        } else if resolved_name == "toInt" {
+            if args.len() != 1 {
+                return Err(Error::runtime(
+                    ErrorCode::R0005,
+                    format!("Function 'toInt' expects 1 argument, got {}.", args.len()),
                     Some(SourceLocation::new(call_token.line, call_token.column, 0)),
                 ));
             }
             let arg_val = &args[0];
             match arg_val {
                 Value::Int(i) => Ok(Value::Int(*i)), // Already an int
-                Value::Float(f) => Ok(Value::Int(*f as i64)), // Truncate float
+                Value::Float(f) => Ok(Value::Int(*f as i64)), // Truncate float to int
                 Value::String(s) => {
-                    match s.parse::<i64>() {
-                        Ok(i) => Ok(Value::Int(i)),
-                        Err(_) => Err(Error::type_error(
-                            ErrorCode::T0004, // Invalid string to int conversion
-                            format!("Cannot convert string \"{}\" to Int.", s),
-                            Some(SourceLocation::new(call_token.line, call_token.column, 0)), // Ideally, location of the argument
-                        )),
+                    if let Ok(i) = s.parse::<i64>() {
+                        return Ok(Value::Int(i));
                     }
-                },
+                    if let Ok(f) = s.parse::<f64>() {
+                        return Ok(Value::Int(f as i64));
+                    }
+                    Err(Error::type_error(
+                        ErrorCode::T0004,
+                        format!("Cannot convert string \"{}\" to Int.", s),
+                        Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                    ))
+                }
                 Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
                 _ => Err(Error::type_error(
                     ErrorCode::T0002,
                     format!("Cannot convert value of type {} to Int.", arg_val.get_type()),
-                    Some(SourceLocation::new(call_token.line, call_token.column, 0)), // Ideally, location of the argument
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
                 )),
             }
-        } else if let Some(func) = self.functions.get(name).cloned() {  // Clone the function to avoid borrowing issues
-            // Check argument count
+        } else if resolved_name == "toString" {
+            if args.len() != 1 {
+                return Err(Error::runtime(
+                    ErrorCode::R0005,
+                    format!("Function 'toString' expects 1 argument, got {}.", args.len()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                ));
+            }
+            let arg_val = &args[0];
+            match arg_val {
+                Value::String(s) => Ok(Value::String(s.clone())),
+                Value::Int(i) => Ok(Value::String(i.to_string())),
+                Value::Float(f) => Ok(Value::String(f.to_string())), // Standard f64 to string conversion
+                Value::Bool(b) => Ok(Value::String(b.to_string())), // "true" or "false"
+                // Handle other types as needed, e.g., if you have Value::Nil:
+                // Value::Nil => Ok(Value::String("nil".to_string())),
+                _ => {
+                    // Fallback: uses the Display trait of Value.
+                    // Ensure your Value enum has a Display implementation.
+                    Ok(Value::String(format!("{}", arg_val)))
+                    // Alternatively, if specific types should not be convertible:
+                    // Err(Error::type_error(
+                    //     ErrorCode::T000X, // Some "cannot convert to string" error
+                    //     format!("Cannot convert value of type {} to String.", arg_val.get_type()),
+                    //     Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                    // ))
+                }
+            }
+        } else if resolved_name == "toBool" {
+            if args.len() != 1 {
+                return Err(Error::runtime(
+                    ErrorCode::R0005,
+                    format!("Function 'toBool' expects 1 argument, got {}.", args.len()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                ));
+            }
+            let arg_val = &args[0];
+            match arg_val {
+                Value::Bool(b) => Ok(Value::Bool(*b)), // Already a bool
+                Value::Int(i) => Ok(Value::Bool(*i != 0)), // 0 is false, others true
+                Value::Float(f) => Ok(Value::Bool(*f != 0.0)), // 0.0 is false, others true
+                Value::String(s) => Ok(Value::Bool(!s.is_empty())), // Empty string is false, others true
+                Value::Null => Ok(Value::Bool(false)),
+                // Handle other types as needed, e.g., if you have Value::Nil:
+                // Value::Nil => Ok(Value::Bool(false)),
+                _ => Err(Error::type_error(
+                    ErrorCode::T0002, // Or a more specific "cannot convert to Bool" error code
+                    format!("Cannot convert value of type {} to Bool.", arg_val.get_type()),
+                    Some(SourceLocation::new(call_token.line, call_token.column, 0)),
+                )),
+            }
+        } else if let Some(func) = self.functions.get(&resolved_name).cloned() {
             if args.len() != func.parameters.len() {
                 return Err(Error::runtime(
                     ErrorCode::R0005,
-                    format!("Function '{}' expects {} arguments, got {}.", name, func.parameters.len(), args.len()),
+                    format!("Function '{}' expects {} arguments, got {}.", resolved_name, func.parameters.len(), args.len()),
                     Some(SourceLocation::new(call_token.line, call_token.column, 0)),
                 ));
             }
 
-            // Create new environment for function call
             let old_env = self.environment.clone();
-            self.environment.clear();
+            self.environment.clear(); // Or use a new, nested environment approach
 
-            // Bind arguments to parameters
             for (param, arg) in func.parameters.iter().zip(args) {
                 self.environment.insert(
                     param.name_token.lexeme.clone(),
                     Variable {
                         var_type: param.param_type.clone(),
                         value: arg,
-                        is_mutable: false, // Function parameters are immutable by default
+                        is_mutable: false,
                     },
                 );
             }
 
-            // Execute function body
             let body = func.body.clone();
             let execution_result = self.execute_statement(&body);
-            self.environment = old_env; // Restore environment regardless of how body finished
+            self.environment = old_env;
 
             match execution_result {
                 Ok(value_if_no_explicit_return) => {
-                    // If the function didn't explicitly return, this is the value of the last statement.
-                    // Check the type against the function's return type
                     self.check_type_compatibility(
                         &func.return_type,
                         &value_if_no_explicit_return,
@@ -1126,8 +1205,6 @@ impl Interpreter {
                     Ok(value_if_no_explicit_return)
                 }
                 Err(Error::ReturnControlFlow(boxed_value)) => {
-                    // Explicit return from the function
-                    // Check the type against the function's return type
                     self.check_type_compatibility(
                         &func.return_type,
                         &boxed_value,
@@ -1136,18 +1213,18 @@ impl Interpreter {
                     Ok(*boxed_value)
                 }
                 Err(other_error) => {
-                    // Any other error should propagate
                     Err(other_error)
                 }
             }
         } else {
             Err(Error::runtime(
                 ErrorCode::R0004,
-                format!("Undefined function '{}'.", name),
+                format!("Undefined function '{}'.", resolved_name),
                 Some(SourceLocation::new(call_token.line, call_token.column, 0)),
             ))
         }
     }
+
 
     /// Helper method to handle list method calls
     fn handle_list_method(&mut self, list_ref: ListRef, method_name: &str, args: Vec<Value>, method_token: &Token) -> Result<Value, Error> {

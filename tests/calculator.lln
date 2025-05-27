@@ -63,7 +63,7 @@ while (choice != 0) {
         println("Invalid choice. Please select an option from 0 to 6.");
         continue;
     }
-
+    
     let num1: int = get_number("Enter the first number:");
     let num2: int = get_number("Enter the second number:");
     let& result: int = 0;

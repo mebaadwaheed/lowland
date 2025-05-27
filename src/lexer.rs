@@ -47,6 +47,7 @@ impl Lexer {
         keywords.insert("including".to_string(), TokenType::Including);
         keywords.insert("export".to_string(), TokenType::Export);
         keywords.insert("from".to_string(), TokenType::From);
+        keywords.insert("struct".to_string(), TokenType::Struct);
 
         Lexer {
             source: source.to_string(),

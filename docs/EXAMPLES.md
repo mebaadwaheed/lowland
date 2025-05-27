@@ -14,12 +14,6 @@ let x: int = 10;
 let& y: float = 3.14;
 let name: string = "Lowland";
 let is_valid: bool = true;
-
-// Type inference
-let a = 42;        // int
-let b = 3.14;      // float
-let c = "Hello";   // string
-let d = true;      // bool
 ```
 
 ### Control Flow
@@ -118,7 +112,7 @@ println("Product:", product);
 
 ## Standard Library Usage
 
-### Math Module
+### Math Module [ NEEDS FIXING! ]
 ```lowland
 including [std::math] from "standard";
 
@@ -252,5 +246,5 @@ export func power(base: int, exponent: int): int {
     return result;
 } // A function being exported with the param "base"
 // And then you go to your main file:
-let base: int = 2; // This gives  the Runtime Error R0002, you CANNOT give exported func param names to variables.
+let base: int = 2; // This gives the Runtime Error R0002, you CANNOT give exported func param names to variables.
 ```

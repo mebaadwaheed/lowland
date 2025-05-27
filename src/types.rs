@@ -21,6 +21,9 @@ pub enum Type {
     /// List type with element type
     List(Box<Type>),
     
+    /// Struct type with a name
+    Struct(String),
+    
     /// Unknown or inferred type
     Unknown,
 }
@@ -34,6 +37,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Object => write!(f, "obj"),
             Type::List(elem_type) => write!(f, "list<{}>", elem_type),
+            Type::Struct(name) => write!(f, "struct<{}>", name),
             Type::Unknown => write!(f, "unknown"),
         }
     }
@@ -52,8 +56,8 @@ impl Type {
             (Type::Bool, Type::Bool) => true,
             (Type::Object, Type::Object) => true,
             (Type::List(t1), Type::List(t2)) => t1.is_compatible_with(t2),
-            // Add other specific compatibility rules here if needed
-            _ => self == other, // Default to exact match if no specific rule applies
+            (Type::Struct(s1), Type::Struct(s2)) => s1 == s2,
+            _ => false, // No other combinations are compatible
         }
     }
-} 
+}

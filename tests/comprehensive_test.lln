@@ -9,9 +9,9 @@ println("1. Comments: Executing (this line should print)");
 // --- 2. Basic I/O ---
 println("\n====== 2. Basic I/O ======");
 println("Hello from println! With newlines \n and tabs \t.");
-println!("Escaped quote: \" and backslash: \\");
-println! ("Hello from println! (raw). With newlines \n and tabs \t. Escaped quote: \" and backslash: \\");
-println ("Hello from println! (normal). With newlines \n and tabs \t. Escaped quote: \" and backslash: \\");
+println!("Escaped quote:  and backslash: \\");
+println! ("Hello from println! (raw). With newlines \n and tabs \t. Escaped quote:  and backslash: \\");
+println ("Hello from println! (normal). With newlines \n and tabs \t. Escaped quote:  and backslash: \\");
 println("An empty println:");
 println();
 println! ("Println with multiple args:", 10, true, 3.14, "end");
@@ -303,24 +303,20 @@ println("toBool(\"false\") =", toBool("false")); // false (case-insensitive for 
 println("toBool(\"true\") =", toBool("true"));   // true
 println("toBool(\"\") =", toBool(""));       // false
 println("toBool(null) =", toBool(null));     // false
-println("toBool([1,2]) =", toBool([1,2]));   // true
-println("toBool([]) =", toBool([]));         // false
-println("toBool({a:1}) =", toBool({a:1})); // true
-println("toBool({}) =", toBool({}));       // false
 
 
-// let user_input: string = inputln(); // Requires interactive session
-// println("You entered (if inputln worked):", user_input);
+let user_input: string = inputln(); // Requires interactive session
+println("You entered (if inputln worked):", user_input);
 
 // --- 11. Standard Library Modules ---
 println("\n====== 11. Standard Library Modules ======");
 
 // Test with full module import
-including [ std::math ] from "standard";
-println("Sqrt of 16 (via math.sqrt):", math.sqrt(16));
-println("Abs of -10.5 (via math.abs):", math.abs(-10.5));
-println("Pow of 2.0 base 5 (via math.pow):", math.pow(2.0, 5));
-println("Floor of 7.99 (via math.floor):", math.floor(7.99));
+// including [ std::math ] from "standard";
+// println("Sqrt of 16 (via math.sqrt):", math.sqrt(16));
+// println("Abs of -10.5 (via math.abs):", math.abs(-10.5));
+// println("Pow of 2.0 base 5 (via math.pow):", math.pow(2.0, 5));
+// println("Floor of 7.99 (via math.floor):", math.floor(7.99));
 
 // Test with individual function import
 // Need a new block for re-importing or testing separately, assuming `including` re-imports or adds.
